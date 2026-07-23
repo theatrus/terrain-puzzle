@@ -410,24 +410,51 @@ fn canonical_job_id(id: &str) -> Option<String> {
 }
 
 fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
+    let job_started = Instant::now();
     update_job(state, id, "running", 10, &[], None)?;
+    let phase_started = Instant::now();
     let height_field = elevation::fetch_height_field(spec, &state.map_cache_dir.join("elevation"))?;
+    info!(
+        job_id = %id,
+        phase = "elevation",
+        elapsed_ms = phase_started.elapsed().as_millis() as u64,
+        "generation phase complete"
+    );
     update_job(state, id, "running", 40, &[], None)?;
     let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
+        let phase_started = Instant::now();
         let field = surface::fetch_surface_field(spec, &state.map_cache_dir)?;
+        info!(
+            job_id = %id,
+            phase = "surface",
+            elapsed_ms = phase_started.elapsed().as_millis() as u64,
+            "generation phase complete"
+        );
         update_job(state, id, "running", 65, &[], None)?;
         Some(field)
     } else {
         None
     };
     let output_dir = state.jobs_dir.join(id);
+    let phase_started = Instant::now();
     let manifest = terrain_core::generate_project_with_fields(
         spec,
         &height_field,
         surface_field.as_ref(),
         &output_dir,
     )?;
+    info!(
+        job_id = %id,
+        phase = "mesh",
+        elapsed_ms = phase_started.elapsed().as_millis() as u64,
+        "generation phase complete"
+    );
     update_job(state, id, "complete", 100, &manifest.artifacts, None)?;
+    info!(
+        job_id = %id,
+        elapsed_ms = job_started.elapsed().as_millis() as u64,
+        "generation complete"
+    );
     Ok(())
 }
 

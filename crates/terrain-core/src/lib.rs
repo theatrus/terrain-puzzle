@@ -363,6 +363,12 @@ struct VectorSurfaceArea {
     building_height_m: f32,
 }
 
+#[derive(Clone, Copy)]
+struct SurfaceSample {
+    class: SurfaceClass,
+    building_height_m: f32,
+}
+
 impl SurfaceField {
     pub fn new(
         width: usize,
@@ -662,16 +668,27 @@ impl SurfaceField {
     }
 
     fn at(&self, u: f32, v: f32) -> SurfaceClass {
-        if self.building_height_at(u, v) > 0.0 {
-            return SurfaceClass::Building;
-        }
+        self.sample(u, v).class
+    }
+
+    fn sample(&self, u: f32, v: f32) -> SurfaceSample {
         let bucket = vector_bucket_index(u, v);
+        let building_height_m = self.building_height_at_in_bucket(u, v, bucket);
+        if building_height_m > 0.0 {
+            return SurfaceSample {
+                class: SurfaceClass::Building,
+                building_height_m,
+            };
+        }
         let line_indices = &self.vector_line_buckets[bucket];
         if line_indices.iter().any(|index| {
             let line = &self.vector_lines[*index];
             line.class == SurfaceClass::Road && surface_line_contains(line, u, v)
         }) {
-            return SurfaceClass::Road;
+            return SurfaceSample {
+                class: SurfaceClass::Road,
+                building_height_m,
+            };
         }
         if let Some(class) = self.vector_area_buckets[bucket]
             .iter()
@@ -683,7 +700,10 @@ impl SurfaceField {
             .find(|(area, _)| point_in_polygon([u, v], &area.points))
             .map(|(_, class)| class)
         {
-            return class;
+            return SurfaceSample {
+                class,
+                building_height_m,
+            };
         }
         if let Some(class) = self.vector_line_buckets[bucket]
             .iter()
@@ -693,15 +713,26 @@ impl SurfaceField {
             .find(|line| surface_line_contains(line, u, v))
             .map(|line| line.class)
         {
-            return class;
+            return SurfaceSample {
+                class,
+                building_height_m,
+            };
         }
         let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
         let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
-        self.base_classes[y * self.width + x]
+        SurfaceSample {
+            class: self.base_classes[y * self.width + x],
+            building_height_m,
+        }
     }
 
+    #[cfg(test)]
     fn building_height_at(&self, u: f32, v: f32) -> f32 {
-        let vector_height = self.vector_area_buckets[vector_bucket_index(u, v)]
+        self.building_height_at_in_bucket(u, v, vector_bucket_index(u, v))
+    }
+
+    fn building_height_at_in_bucket(&self, u: f32, v: f32, bucket: usize) -> f32 {
+        let vector_height = self.vector_area_buckets[bucket]
             .iter()
             .map(|index| &self.vector_areas[*index])
             .filter(|area| area.building_height_m > 0.0)
@@ -2160,39 +2191,44 @@ fn build_piece(
             .context("triangulate terrain outline")?;
     let top_count = triangulation.num_vertices();
     let mut vertices = Vec::with_capacity(top_count * 2);
-    for layer in 0..2 {
-        for vertex in triangulation.vertices() {
-            let position = vertex.position();
-            let assembled_x = position.x as f32 + origin_x;
-            let assembled_y = position.y as f32 + origin_y;
-            let z = if layer == 0 {
-                spec.base_mm
-                    + spec.relief_mm
-                        * normalized_height(
-                            height_field,
-                            height_range,
-                            assembled_x / assembled_width,
-                            assembled_y / assembled_height,
-                            spec.center_lat,
-                            spec.center_lon,
-                        )
-                    + building_height_mm(
-                        spec,
-                        surface_field,
-                        assembled_x / assembled_width,
-                        assembled_y / assembled_height,
-                    )
-                    + road_height_mm(
-                        spec,
-                        surface_field,
-                        assembled_x / assembled_width,
-                        assembled_y / assembled_height,
-                    )
-            } else {
-                0.0
-            };
-            vertices.push([position.x as f32, position.y as f32, z]);
-        }
+    let mut top_has_building = Vec::with_capacity(top_count);
+    for vertex in triangulation.vertices() {
+        let position = vertex.position();
+        let assembled_x = position.x as f32 + origin_x;
+        let assembled_y = position.y as f32 + origin_y;
+        let u = assembled_x / assembled_width;
+        let v = assembled_y / assembled_height;
+        let surface_sample = surface_field.map(|field| field.sample(u, v));
+        let building_height_m = surface_sample
+            .map(|sample| sample.building_height_m)
+            .unwrap_or(0.0);
+        let building = scaled_building_height_mm(spec, building_height_m);
+        let road = surface_sample
+            .filter(|sample| {
+                spec.color_output.enabled
+                    && spec.color_output.roads_enabled
+                    && sample.class == SurfaceClass::Road
+            })
+            .map(|_| spec.color_output.road_height_mm)
+            .unwrap_or(0.0);
+        let z = spec.base_mm
+            + spec.relief_mm
+                * normalized_height(
+                    height_field,
+                    height_range,
+                    u,
+                    v,
+                    spec.center_lat,
+                    spec.center_lon,
+                )
+            + building
+            + road;
+        vertices.push([position.x as f32, position.y as f32, z]);
+        top_has_building.push(spec.buildings.enabled && building_height_m > 0.0);
+    }
+    for vertex in triangulation.vertices() {
+        let position = vertex.position();
+        vertices.push([position.x as f32, position.y as f32, 0.0]);
     }
 
     let mut top_triangles = Vec::with_capacity(triangulation.num_inner_faces());
@@ -2207,7 +2243,8 @@ fn build_piece(
         if !point_in_polygon(centroid, &outline) {
             continue;
         }
-        let mut top = face_vertices.map(|vertex| vertex.fix().index() as u32);
+        let face_indices = face_vertices.map(|vertex| vertex.fix().index());
+        let mut top = face_indices.map(|index| index as u32);
         let area = (positions[1].x - positions[0].x) * (positions[2].y - positions[0].y)
             - (positions[1].y - positions[0].y) * (positions[2].x - positions[0].x);
         if area < 0.0 {
@@ -2218,12 +2255,7 @@ fn build_piece(
             surface_field
                 .map(|field| {
                     if spec.buildings.enabled
-                        && positions.iter().any(|position| {
-                            field.building_height_at(
-                                (position.x as f32 + origin_x) / assembled_width,
-                                (position.y as f32 + origin_y) / assembled_height,
-                            ) > 0.0
-                        })
+                        && face_indices.iter().any(|index| top_has_building[*index])
                     {
                         SurfaceClass::Building
                     } else {
@@ -2784,34 +2816,11 @@ fn normalized_height(
     }
 }
 
-fn building_height_mm(
-    spec: &GenerationSpec,
-    surface_field: Option<&SurfaceField>,
-    u: f32,
-    v: f32,
-) -> f32 {
+fn scaled_building_height_mm(spec: &GenerationSpec, height_m: f32) -> f32 {
     if !spec.buildings.enabled {
         return 0.0;
     }
-    let height_m = surface_field
-        .map(|field| field.building_height_at(u, v))
-        .unwrap_or(0.0);
     height_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0) * spec.buildings.z_scale
-}
-
-fn road_height_mm(
-    spec: &GenerationSpec,
-    surface_field: Option<&SurfaceField>,
-    u: f32,
-    v: f32,
-) -> f32 {
-    if !spec.color_output.enabled || !spec.color_output.roads_enabled {
-        return 0.0;
-    }
-    surface_field
-        .filter(|field| field.at(u, v) == SurfaceClass::Road)
-        .map(|_| spec.color_output.road_height_mm)
-        .unwrap_or(0.0)
 }
 
 fn build_preview(
@@ -2827,14 +2836,27 @@ fn build_preview(
         for x in 0..size {
             let u = x as f32 / (size - 1) as f32;
             let v = y as f32 / (size - 1) as f32;
+            let surface_sample = surface_field.map(|field| field.sample(u, v));
             let terrain =
                 normalized_height(height_field, range, u, v, spec.center_lat, spec.center_lon);
-            let building =
-                building_height_mm(spec, surface_field, u, v) / spec.relief_mm.max(f32::EPSILON);
-            let road = road_height_mm(spec, surface_field, u, v) / spec.relief_mm.max(f32::EPSILON);
+            let building = scaled_building_height_mm(
+                spec,
+                surface_sample
+                    .map(|sample| sample.building_height_m)
+                    .unwrap_or(0.0),
+            ) / spec.relief_mm.max(f32::EPSILON);
+            let road = surface_sample
+                .filter(|sample| {
+                    spec.color_output.enabled
+                        && spec.color_output.roads_enabled
+                        && sample.class == SurfaceClass::Road
+                })
+                .map(|_| spec.color_output.road_height_mm)
+                .unwrap_or(0.0)
+                / spec.relief_mm.max(f32::EPSILON);
             heights.push(terrain + building + road);
-            if let (Some(field), Some(classes)) = (surface_field, surface_classes.as_mut()) {
-                classes.push(field.at(u, v).material_index());
+            if let (Some(sample), Some(classes)) = (surface_sample, surface_classes.as_mut()) {
+                classes.push(sample.class.material_index());
             }
         }
     }
@@ -2921,8 +2943,9 @@ impl<'a> ThreeMfWriter<'a> {
     fn new(spec: &'a GenerationSpec, path: &Path) -> Result<Self> {
         let file = File::create(path).with_context(|| format!("create 3MF {}", path.display()))?;
         let mut zip = ZipWriter::new(file);
-        let options =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(3));
 
         zip.start_file("[Content_Types].xml", options)?;
         zip.write_all(
@@ -3641,7 +3664,10 @@ mod tests {
             },
             ..GenerationSpec::default()
         };
-        assert!((building_height_mm(&spec, Some(&field), 0.5, 0.5) - 2.4).abs() < 0.001);
+        assert!(
+            (scaled_building_height_mm(&spec, field.building_height_at(0.5, 0.5)) - 2.4).abs()
+                < 0.001
+        );
     }
 
     #[test]

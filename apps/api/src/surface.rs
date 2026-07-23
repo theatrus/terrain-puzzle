@@ -14,6 +14,7 @@ const DEFAULT_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyright";
 const PROMINENT_HIGHWAYS: &str =
     "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link";
+const FALLBACK_TRAILS: &str = "path|footway|bridleway|track|cycleway";
 
 #[derive(Debug)]
 struct SamplePoint {
@@ -48,6 +49,12 @@ struct OverpassWay {
 struct OverpassPoint {
     lat: f64,
     lon: f64,
+}
+
+#[derive(Debug, Default)]
+struct RouteCounts {
+    roads: usize,
+    trails: usize,
 }
 
 pub fn fetch_surface_field(spec: &GenerationSpec, road_cache_dir: &Path) -> Result<SurfaceField> {
@@ -94,10 +101,18 @@ pub fn fetch_surface_field(spec: &GenerationSpec, road_cache_dir: &Path) -> Resu
     )?;
     field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
     if spec.color_output.roads_enabled {
-        let road_count = paint_prominent_roads(spec, bounds, road_cache_dir, &mut field)?;
-        field.source.push_str(&format!(
-            "; prominent roads: {road_count} OpenStreetMap ways via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}"
-        ));
+        let counts = paint_roads_or_trails(spec, bounds, road_cache_dir, &mut field)?;
+        if counts.roads > 0 {
+            field.source.push_str(&format!(
+                "; prominent roads: {} OpenStreetMap ways via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                counts.roads
+            ));
+        } else {
+            field.source.push_str(&format!(
+                "; no prominent roads found; trail fallback: {} OpenStreetMap ways via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                counts.trails
+            ));
+        }
     }
     Ok(field)
 }
@@ -114,19 +129,41 @@ fn bounds_for(spec: &GenerationSpec) -> GeoBounds {
     }
 }
 
-fn paint_prominent_roads(
+fn paint_roads_or_trails(
     spec: &GenerationSpec,
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
-) -> Result<usize> {
-    let response = fetch_prominent_roads(spec, bounds, cache_dir)?;
+) -> Result<RouteCounts> {
+    let roads = fetch_osm_ways(spec, bounds, cache_dir, "roads", PROMINENT_HIGHWAYS)?;
+    let road_count = paint_osm_ways(spec, bounds, field, roads, road_width_scale);
+    if road_count > 0 {
+        return Ok(RouteCounts {
+            roads: road_count,
+            trails: 0,
+        });
+    }
+    let trails = fetch_osm_ways(spec, bounds, cache_dir, "trails", FALLBACK_TRAILS)?;
+    let trail_count = paint_osm_ways(spec, bounds, field, trails, trail_width_scale);
+    Ok(RouteCounts {
+        roads: 0,
+        trails: trail_count,
+    })
+}
+
+fn paint_osm_ways(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    field: &mut SurfaceField,
+    response: OverpassResponse,
+    width_scale: fn(&HashMap<String, String>) -> Option<f32>,
+) -> usize {
     let mut painted = 0;
     for way in response.elements {
         if way.geometry.len() < 2 || is_tunnel(&way.tags) {
             continue;
         }
-        let Some(width_scale) = road_width_scale(&way.tags) else {
+        let Some(scale) = width_scale(&way.tags) else {
             continue;
         };
         let points = way
@@ -143,29 +180,31 @@ fn paint_prominent_roads(
         field.paint_polyline(
             &points,
             spec.width_mm,
-            spec.color_output.road_width_mm * width_scale,
+            spec.color_output.road_width_mm * scale,
             SurfaceClass::Road,
         );
         painted += 1;
     }
-    Ok(painted)
+    painted
 }
 
-fn fetch_prominent_roads(
+fn fetch_osm_ways(
     spec: &GenerationSpec,
     bounds: GeoBounds,
     cache_dir: &Path,
+    cache_prefix: &str,
+    highway_filter: &str,
 ) -> Result<OverpassResponse> {
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create road cache {}", cache_dir.display()))?;
     let cache_path = cache_dir.join(format!(
-        "roads-{:.5}-{:.5}-{:.3}.json",
-        spec.center_lat, spec.center_lon, spec.ground_span_km
+        "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
+        spec.center_lat, spec.center_lon, spec.ground_span_km,
     ));
     let (bytes, should_cache) = match fs::read(&cache_path) {
         Ok(bytes) => (bytes, false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let query = overpass_query(bounds);
+            let query = overpass_query(bounds, highway_filter);
             let base_url =
                 env::var("OVERPASS_BASE_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.into());
             let client = Client::builder()
@@ -177,11 +216,11 @@ fn fetch_prominent_roads(
                 .post(&base_url)
                 .form(&[("data", query)])
                 .send()
-                .context("request prominent roads from OpenStreetMap Overpass")?
+                .with_context(|| format!("request {cache_prefix} from OpenStreetMap Overpass"))?
                 .error_for_status()
                 .context("OpenStreetMap Overpass rejected the road request")?
                 .bytes()
-                .context("read OpenStreetMap road response")?
+                .with_context(|| format!("read OpenStreetMap {cache_prefix} response"))?
                 .to_vec();
             (bytes, true)
         }
@@ -189,8 +228,8 @@ fn fetch_prominent_roads(
             return Err(error).with_context(|| format!("read road cache {}", cache_path.display()));
         }
     };
-    let response: OverpassResponse =
-        serde_json::from_slice(&bytes).context("parse OpenStreetMap Overpass road response")?;
+    let response: OverpassResponse = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse OpenStreetMap Overpass {cache_prefix} response"))?;
     if should_cache {
         fs::write(&cache_path, &bytes)
             .with_context(|| format!("cache road data {}", cache_path.display()))?;
@@ -198,7 +237,7 @@ fn fetch_prominent_roads(
     Ok(response)
 }
 
-fn overpass_query(bounds: GeoBounds) -> String {
+fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
     let bboxes = if bounds.west < -180.0 {
         vec![
             (bounds.south, bounds.west + 360.0, bounds.north, 180.0),
@@ -216,7 +255,7 @@ fn overpass_query(bounds: GeoBounds) -> String {
         .iter()
         .map(|(south, west, north, east)| {
             format!(
-                "way[\"highway\"~\"^({PROMINENT_HIGHWAYS})$\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+                "way[\"highway\"~\"^({highway_filter})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});"
             )
         })
         .collect::<String>();
@@ -231,6 +270,16 @@ fn road_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
         "secondary" => Some(0.8),
         "motorway_link" | "trunk_link" => Some(0.75),
         "primary_link" | "secondary_link" => Some(0.65),
+        _ => None,
+    }
+}
+
+fn trail_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
+    match tags.get("highway")?.as_str() {
+        "track" => Some(0.7),
+        "bridleway" => Some(0.65),
+        "cycleway" => Some(0.6),
+        "path" | "footway" => Some(0.55),
         _ => None,
     }
 }
@@ -410,14 +459,18 @@ mod tests {
 
     #[test]
     fn builds_prominent_road_query_with_geometry() {
-        let query = overpass_query(GeoBounds {
-            south: 47.0,
-            north: 48.0,
-            west: -123.0,
-            east: -122.0,
-        });
+        let query = overpass_query(
+            GeoBounds {
+                south: 47.0,
+                north: 48.0,
+                west: -123.0,
+                east: -122.0,
+            },
+            PROMINENT_HIGHWAYS,
+        );
         assert!(query.contains("motorway"));
         assert!(query.contains("secondary_link"));
+        assert!(query.contains("[\"area\"!=\"yes\"]"));
         assert!(query.contains("(47.0000000,-123.0000000,48.0000000,-122.0000000)"));
         assert!(query.ends_with("out tags geom;"));
     }
@@ -428,6 +481,23 @@ mod tests {
         assert!(road_width_scale(&tags("motorway")) > road_width_scale(&tags("primary")));
         assert!(road_width_scale(&tags("primary")) > road_width_scale(&tags("secondary")));
         assert_eq!(road_width_scale(&tags("residential")), None);
+    }
+
+    #[test]
+    fn builds_trail_fallback_query_and_widths() {
+        let query = overpass_query(
+            GeoBounds {
+                south: 46.8,
+                north: 46.9,
+                west: -121.9,
+                east: -121.7,
+            },
+            FALLBACK_TRAILS,
+        );
+        assert!(query.contains("path|footway|bridleway|track|cycleway"));
+        let tags = |class: &str| HashMap::from([("highway".into(), class.into())]);
+        assert!(trail_width_scale(&tags("track")) > trail_width_scale(&tags("path")));
+        assert_eq!(trail_width_scale(&tags("primary")), None);
     }
 
     #[test]

@@ -30,7 +30,9 @@ OpenStreetMap adds motorway, trunk, primary, and secondary road geometry after
 the land-cover mask is clean. Higher road classes get wider print lines. The
 generator skips tunnels and keeps bridges visible. The default primary-road
 width is 1.0 mm; motorway and trunk lines are wider, while secondary roads and
-links are narrower.
+links are narrower. If no visible prominent road crosses the model, the
+generator falls back to paths, footways, bridleways, tracks, and cycleways.
+Trails never appear on top of a road network.
 
 The map is static, so snow means mapped snow or ice rather than current seasonal
 snow. Water includes lakes, reservoirs, and rivers that are wide enough to

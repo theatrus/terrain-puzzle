@@ -20,8 +20,9 @@ Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
 forest, rock, snow, and water colors. It also reads prominent roads from
 OpenStreetMap through Overpass, then draws motorway, trunk, primary, and
-secondary roads at print-safe widths. The 3MF stores standard triangle color
-properties. STL files stay single-color.
+secondary roads at print-safe widths. If none cross the selected area, it draws
+paths, footways, bridleways, tracks, and cycleways as a trail fallback. The 3MF
+stores standard triangle color properties. STL files stay single-color.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests

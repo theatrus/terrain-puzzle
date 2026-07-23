@@ -735,7 +735,7 @@ function ReliefPreview({
               ["Rock", "rock", spec.color_output.rock_color],
               ["Snow", "snow", spec.color_output.snow_color],
               ["Water", "water", spec.color_output.water_color],
-              ["Road", "road", spec.color_output.road_color],
+              ["Route", "road", spec.color_output.road_color],
             ] as const
           )
             .filter(
@@ -948,7 +948,7 @@ export function TerrainStudio() {
     if (job.progress < 40) return "Sampling global elevation…";
     if (job.progress < 65 && spec.color_output.enabled) {
       return spec.color_output.roads_enabled
-        ? "Mapping land cover and prominent roads…"
+        ? "Mapping land cover, roads, or fallback trails…"
         : "Mapping forest, rock, snow, and water…";
     }
     return job.spec.solid_model
@@ -1135,7 +1135,7 @@ export function TerrainStudio() {
             <div className="color-heading">
               <div>
                 <strong className="color-title">Surface colors</strong>
-                <p>Paint the 3MF from mapped land cover and roads.</p>
+                <p>Paint the 3MF from mapped land cover and routes.</p>
               </div>
               <label className="color-toggle">
                 <input
@@ -1157,7 +1157,7 @@ export function TerrainStudio() {
                       ["Rock", "rock_color"],
                       ["Snow", "snow_color"],
                       ["Water", "water_color"],
-                      ["Road", "road_color"],
+                      ["Route", "road_color"],
                     ] as const
                   ).map(([label, key]) => (
                     <label key={key}>
@@ -1189,13 +1189,13 @@ export function TerrainStudio() {
                         updateColor("roads_enabled", event.target.checked)
                       }
                     />
-                    <span>Prominent roads</span>
+                    <span>Roads / trail fallback</span>
                   </label>
-                  <small>Motorway through secondary road</small>
+                  <small>Trails only where roads are absent</small>
                 </div>
                 {spec.color_output.roads_enabled && (
                   <RangeField
-                    label="Road print width"
+                    label="Route print width"
                     value={spec.color_output.road_width_mm}
                     unit=" mm"
                     min={0.6}
@@ -1206,10 +1206,11 @@ export function TerrainStudio() {
                 )}
                 <p className="color-note">
                   Water shows mapped permanent lakes, reservoirs, and rivers.
-                  Narrow streams below 10 m may not appear. Roads come from
-                  OpenStreetMap, with wider lines for higher road classes.
-                  Tunnels stay hidden. Snow is not live. Sides and bottoms use
-                  the rock color.
+                  Narrow streams below 10 m may not appear. Routes come from
+                  OpenStreetMap. The generator uses prominent roads first, then
+                  trails only when no roads cross the model. Tunnels stay
+                  hidden. Snow is not live. Sides and bottoms use the rock
+                  color.
                 </p>
               </>
             )}
@@ -1356,7 +1357,7 @@ export function TerrainStudio() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      OpenStreetMap road data
+                      OpenStreetMap road and trail data
                     </a>
                   </strong>
                 )}

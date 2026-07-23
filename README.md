@@ -8,6 +8,18 @@ tabs and sockets, and stores job state in SQLite. The web app lets you choose a
 place and tune the printable model, including the mesh detail and surface
 colors.
 
+## Download
+
+Download the latest desktop build from
+[TopoSaic Releases](https://github.com/theatrus/toposaic/releases):
+
+- Windows x64: `.exe` setup or `.msi` installer
+- macOS Apple silicon: `.dmg` disk image or `.app.zip` application archive
+- Linux x86-64: portable `.AppImage`
+
+The macOS build uses an ad-hoc signature for now and is not notarized. On
+Linux, make the AppImage executable with `chmod +x` before opening it.
+
 ## Screenshots
 
 ![TopoSaic workspace showing the Mount Rainier map and interactive 3D terrain puzzle preview](docs/images/toposaic-studio.png)

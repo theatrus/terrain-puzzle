@@ -30,7 +30,9 @@ same download.
 For uncached requests, the service tries a second public Overpass instance when
 the first rejects or cannot serve the request. If both fail, generation
 continues without that OSM layer. WorldCover water and terrain output remain
-available. Set `OVERPASS_BASE_URL` to use one specific Overpass instance.
+available. Concurrent jobs share each cache fill, and the service tries the last
+working public instance first on its next request. Set `OVERPASS_BASE_URL` to
+use one specific Overpass instance.
 
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable

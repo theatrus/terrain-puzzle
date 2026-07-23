@@ -5,11 +5,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use geo::{Area, Buffer, Coord, LineString, Polygon};
 use serde::{Deserialize, Serialize};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+use ttf_parser::{Face, OutlineBuilder};
 use zip::{ZipWriter, write::SimpleFileOptions};
+
+const TRAY_FONT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/AtkinsonHyperlegible-Regular.ttf"
+));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -635,53 +641,6 @@ impl MeshBuilder {
         self.triangle(a, c, d, material);
     }
 
-    fn cuboid(&mut self, minimum: [f32; 3], maximum: [f32; 3], material: SurfaceClass) {
-        let [x0, y0, z0] = minimum;
-        let [x1, y1, z1] = maximum;
-        self.quad(
-            [x0, y0, z1],
-            [x1, y0, z1],
-            [x1, y1, z1],
-            [x0, y1, z1],
-            material,
-        );
-        self.quad(
-            [x0, y1, z0],
-            [x1, y1, z0],
-            [x1, y0, z0],
-            [x0, y0, z0],
-            material,
-        );
-        self.quad(
-            [x0, y0, z0],
-            [x1, y0, z0],
-            [x1, y0, z1],
-            [x0, y0, z1],
-            material,
-        );
-        self.quad(
-            [x1, y1, z0],
-            [x0, y1, z0],
-            [x0, y1, z1],
-            [x1, y1, z1],
-            material,
-        );
-        self.quad(
-            [x0, y1, z0],
-            [x0, y0, z0],
-            [x0, y0, z1],
-            [x0, y1, z1],
-            material,
-        );
-        self.quad(
-            [x1, y0, z0],
-            [x1, y1, z0],
-            [x1, y1, z1],
-            [x1, y0, z1],
-            material,
-        );
-    }
-
     fn finish(self, name: impl Into<String>) -> Mesh {
         Mesh {
             name: name.into(),
@@ -692,7 +651,7 @@ impl MeshBuilder {
     }
 }
 
-fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh {
+fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<Mesh> {
     let tray = &spec.tray;
     let inner_width = spec.width_mm + tray.clearance_mm * 2.0;
     let inner_height = spec.height_mm() + tray.clearance_mm * 2.0;
@@ -740,7 +699,7 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh
         .copied()
         .filter(|y| *y >= inner_y1)
         .collect::<Vec<_>>();
-    let label = tray_label(spec, outer_width, tray.rim_width_mm);
+    let label = tray_label(spec, outer_width, tray.rim_width_mm)?;
     let z_coordinates = [0.0, rim_z];
 
     let height_range = height_field.map(HeightField::range);
@@ -906,9 +865,9 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh
         let next = boundary[(index + 1) % boundary.len()];
         mesh.triangle(center, next, current, SurfaceClass::Rock);
     }
-    label.add_embossed_shapes(&mut mesh, rim_z);
+    label.add_embossed_shapes(&mut mesh, rim_z)?;
 
-    mesh.finish("terrain-tray")
+    Ok(mesh.finish("terrain-tray"))
 }
 
 fn contour_band(
@@ -942,42 +901,279 @@ fn insert_coordinate(coordinates: &mut Vec<f32>, value: f32) {
     coordinates.dedup_by(|a, b| (*a - *b).abs() < 0.000_01);
 }
 
+fn tray_font() -> Result<Face<'static>> {
+    Face::parse(TRAY_FONT, 0).map_err(|error| anyhow!("parse bundled tray font: {error:?}"))
+}
+
+#[derive(Default)]
+struct GlyphOutline {
+    contours: Vec<Vec<[f32; 2]>>,
+    current: Vec<[f32; 2]>,
+}
+
+impl GlyphOutline {
+    fn push_point(&mut self, point: [f32; 2]) {
+        if self
+            .current
+            .last()
+            .is_none_or(|last| distance_squared(*last, point) > 0.000_001)
+        {
+            self.current.push(point);
+        }
+    }
+
+    fn finish_contour(&mut self) {
+        if self.current.len() > 2 {
+            if distance_squared(self.current[0], *self.current.last().unwrap()) < 0.000_001 {
+                self.current.pop();
+            }
+            if self.current.len() > 2 {
+                self.contours.push(std::mem::take(&mut self.current));
+                return;
+            }
+        }
+        self.current.clear();
+    }
+}
+
+impl OutlineBuilder for GlyphOutline {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.finish_contour();
+        self.push_point([x, y]);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.push_point([x, y]);
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let start = *self.current.last().unwrap_or(&[x, y]);
+        flatten_quadratic(start, [x1, y1], [x, y], 0, &mut self.current);
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let start = *self.current.last().unwrap_or(&[x, y]);
+        flatten_cubic(start, [x1, y1], [x2, y2], [x, y], 0, &mut self.current);
+    }
+
+    fn close(&mut self) {
+        self.finish_contour();
+    }
+}
+
+fn flatten_quadratic(
+    start: [f32; 2],
+    control: [f32; 2],
+    end: [f32; 2],
+    depth: u8,
+    output: &mut Vec<[f32; 2]>,
+) {
+    if depth >= 10 || point_line_distance(control, start, end) <= 2.0 {
+        output.push(end);
+        return;
+    }
+    let start_control = midpoint(start, control);
+    let control_end = midpoint(control, end);
+    let middle = midpoint(start_control, control_end);
+    flatten_quadratic(start, start_control, middle, depth + 1, output);
+    flatten_quadratic(middle, control_end, end, depth + 1, output);
+}
+
+fn flatten_cubic(
+    start: [f32; 2],
+    control_a: [f32; 2],
+    control_b: [f32; 2],
+    end: [f32; 2],
+    depth: u8,
+    output: &mut Vec<[f32; 2]>,
+) {
+    let flatness =
+        point_line_distance(control_a, start, end).max(point_line_distance(control_b, start, end));
+    if depth >= 10 || flatness <= 2.0 {
+        output.push(end);
+        return;
+    }
+    let start_a = midpoint(start, control_a);
+    let a_b = midpoint(control_a, control_b);
+    let b_end = midpoint(control_b, end);
+    let first_middle = midpoint(start_a, a_b);
+    let second_middle = midpoint(a_b, b_end);
+    let middle = midpoint(first_middle, second_middle);
+    flatten_cubic(start, start_a, first_middle, middle, depth + 1, output);
+    flatten_cubic(middle, second_middle, b_end, end, depth + 1, output);
+}
+
+fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
+fn distance_squared(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
+}
+
+fn point_line_distance(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
+    let length_squared = distance_squared(start, end);
+    if length_squared <= f32::EPSILON {
+        return distance_squared(point, start).sqrt();
+    }
+    let cross =
+        (end[0] - start[0]) * (start[1] - point[1]) - (start[0] - point[0]) * (end[1] - start[1]);
+    cross.abs() / length_squared.sqrt()
+}
+
+fn point_in_contours(point: [f32; 2], contours: &[Vec<[f32; 2]>]) -> bool {
+    contours
+        .iter()
+        .filter(|contour| point_in_polygon(point, contour))
+        .count()
+        % 2
+        == 1
+}
+
+fn add_extruded_contours(
+    mesh: &mut MeshBuilder,
+    contours: &[Vec<[f32; 2]>],
+    bottom_z: f32,
+    top_z: f32,
+    material: SurfaceClass,
+) -> Result<()> {
+    let mut points = Vec::new();
+    let mut constraints = Vec::new();
+    for contour in contours.iter().filter(|contour| contour.len() > 2) {
+        let start = points.len();
+        points.extend(
+            contour
+                .iter()
+                .map(|point| Point2::new(f64::from(point[0]), f64::from(point[1]))),
+        );
+        constraints.extend(
+            (0..contour.len()).map(|index| [start + index, start + (index + 1) % contour.len()]),
+        );
+    }
+    if points.len() < 3 {
+        return Ok(());
+    }
+
+    let triangulation =
+        ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
+            .context("triangulate vector tray label")?;
+    for face in triangulation.inner_faces() {
+        let positions = face.vertices().map(|vertex| vertex.position());
+        let centroid = [
+            ((positions[0].x + positions[1].x + positions[2].x) / 3.0) as f32,
+            ((positions[0].y + positions[1].y + positions[2].y) / 3.0) as f32,
+        ];
+        if !point_in_contours(centroid, contours) {
+            continue;
+        }
+        let mut triangle = positions.map(|point| [point.x as f32, point.y as f32]);
+        let area = (triangle[1][0] - triangle[0][0]) * (triangle[2][1] - triangle[0][1])
+            - (triangle[1][1] - triangle[0][1]) * (triangle[2][0] - triangle[0][0]);
+        if area < 0.0 {
+            triangle.swap(1, 2);
+        }
+        mesh.triangle(
+            [triangle[0][0], triangle[0][1], top_z],
+            [triangle[1][0], triangle[1][1], top_z],
+            [triangle[2][0], triangle[2][1], top_z],
+            material,
+        );
+        mesh.triangle(
+            [triangle[2][0], triangle[2][1], bottom_z],
+            [triangle[1][0], triangle[1][1], bottom_z],
+            [triangle[0][0], triangle[0][1], bottom_z],
+            material,
+        );
+    }
+
+    for contour in contours.iter().filter(|contour| contour.len() > 2) {
+        for index in 0..contour.len() {
+            let a = contour[index];
+            let b = contour[(index + 1) % contour.len()];
+            let edge = [b[0] - a[0], b[1] - a[1]];
+            let edge_length = (edge[0].powi(2) + edge[1].powi(2)).sqrt();
+            if edge_length <= f32::EPSILON {
+                continue;
+            }
+            let middle = midpoint(a, b);
+            let probe = [
+                middle[0] - edge[1] / edge_length * 0.002,
+                middle[1] + edge[0] / edge_length * 0.002,
+            ];
+            if point_in_contours(probe, contours) {
+                mesh.quad(
+                    [a[0], a[1], bottom_z],
+                    [b[0], b[1], bottom_z],
+                    [b[0], b[1], top_z],
+                    [a[0], a[1], top_z],
+                    material,
+                );
+            } else {
+                mesh.quad(
+                    [b[0], b[1], bottom_z],
+                    [a[0], a[1], bottom_z],
+                    [a[0], a[1], top_z],
+                    [b[0], b[1], top_z],
+                    material,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 struct TrayLabel {
-    text: Vec<char>,
+    text: String,
     origin_x: f32,
-    origin_y: f32,
+    baseline_y: f32,
     scale: f32,
 }
 
 impl TrayLabel {
-    fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) {
-        let inset = self.scale * 0.08;
-        for (character_index, character) in self.text.iter().enumerate() {
-            for (row, bits) in glyph_rows(*character).into_iter().enumerate() {
-                for column in 0..5 {
-                    if bits & (1 << (4 - column)) == 0 {
-                        continue;
-                    }
-                    let x0 = self.origin_x
-                        + (character_index as f32 * 6.0 + column as f32) * self.scale
-                        + inset;
-                    let y0 = self.origin_y + (6 - row) as f32 * self.scale + inset;
-                    mesh.cuboid(
-                        [x0, y0, rim_z - 0.02],
-                        [
-                            x0 + self.scale - inset * 2.0,
-                            y0 + self.scale - inset * 2.0,
-                            rim_z + 0.56,
-                        ],
-                        SurfaceClass::Snow,
-                    );
-                }
+    fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) -> Result<()> {
+        let face = tray_font()?;
+        let mut pen_x = 0.0;
+        for character in self.text.chars() {
+            let glyph_id = face
+                .glyph_index(character)
+                .ok_or_else(|| anyhow!("tray font has no glyph for {character:?}"))?;
+            let advance = face
+                .glyph_hor_advance(glyph_id)
+                .ok_or_else(|| anyhow!("tray font has no advance for {character:?}"))?
+                as f32;
+            let mut outline = GlyphOutline::default();
+            if face.outline_glyph(glyph_id, &mut outline).is_some() {
+                outline.finish_contour();
+                let contours = outline
+                    .contours
+                    .into_iter()
+                    .map(|contour| {
+                        contour
+                            .into_iter()
+                            .map(|point| {
+                                [
+                                    self.origin_x + (pen_x + point[0]) * self.scale,
+                                    self.baseline_y + point[1] * self.scale,
+                                ]
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                add_extruded_contours(
+                    mesh,
+                    &contours,
+                    rim_z - 0.02,
+                    rim_z + 0.56,
+                    SurfaceClass::Snow,
+                )?;
             }
+            pen_x += advance;
         }
+        Ok(())
     }
 }
 
-fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> TrayLabel {
+fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<TrayLabel> {
     let mut place = spec
         .place_name
         .chars()
@@ -994,20 +1190,25 @@ fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> TrayLabel {
     place.truncate(place.floor_char_boundary(26));
     let latitude = coordinate_label(spec.center_lat, 'N', 'S');
     let longitude = coordinate_label(spec.center_lon, 'E', 'W');
-    let text = format!("{place}  {latitude} {longitude}")
+    let text = format!("{place}  {latitude} {longitude}");
+    let face = tray_font()?;
+    let logical_width = text
         .chars()
-        .collect::<Vec<_>>();
-    let logical_width = (text.len() * 6).saturating_sub(1) as f32;
-    let scale = 0.52_f32
-        .min((width - 4.0) / logical_width.max(1.0))
-        .min((lip_depth - 2.0) / 7.0);
+        .filter_map(|character| face.glyph_index(character))
+        .filter_map(|glyph_id| face.glyph_hor_advance(glyph_id))
+        .map(f32::from)
+        .sum::<f32>();
+    let cap_height = f32::from(face.capital_height().unwrap_or(face.ascender()));
+    let scale =
+        ((width - 4.0) / logical_width.max(1.0)).min((lip_depth - 1.6) / cap_height.max(1.0));
     let text_width = logical_width * scale;
-    TrayLabel {
+    let text_height = cap_height * scale;
+    Ok(TrayLabel {
         text,
         origin_x: (width - text_width) * 0.5,
-        origin_y: (lip_depth - scale * 7.0) * 0.5,
+        baseline_y: (lip_depth - text_height) * 0.5,
         scale,
-    }
+    })
 }
 
 fn coordinate_label(value: f64, positive: char, negative: char) -> String {
@@ -1016,51 +1217,6 @@ fn coordinate_label(value: f64, positive: char, negative: char) -> String {
         value.abs(),
         if value >= 0.0 { positive } else { negative }
     )
-}
-
-fn glyph_rows(character: char) -> [u8; 7] {
-    match character {
-        'A' => [14, 17, 17, 31, 17, 17, 17],
-        'B' => [30, 17, 17, 30, 17, 17, 30],
-        'C' => [14, 17, 16, 16, 16, 17, 14],
-        'D' => [30, 17, 17, 17, 17, 17, 30],
-        'E' => [31, 16, 16, 30, 16, 16, 31],
-        'F' => [31, 16, 16, 30, 16, 16, 16],
-        'G' => [14, 17, 16, 23, 17, 17, 15],
-        'H' => [17, 17, 17, 31, 17, 17, 17],
-        'I' => [31, 4, 4, 4, 4, 4, 31],
-        'J' => [1, 1, 1, 1, 17, 17, 14],
-        'K' => [17, 18, 20, 24, 20, 18, 17],
-        'L' => [16, 16, 16, 16, 16, 16, 31],
-        'M' => [17, 27, 21, 21, 17, 17, 17],
-        'N' => [17, 25, 21, 19, 17, 17, 17],
-        'O' => [14, 17, 17, 17, 17, 17, 14],
-        'P' => [30, 17, 17, 30, 16, 16, 16],
-        'Q' => [14, 17, 17, 17, 21, 18, 13],
-        'R' => [30, 17, 17, 30, 20, 18, 17],
-        'S' => [15, 16, 16, 14, 1, 1, 30],
-        'T' => [31, 4, 4, 4, 4, 4, 4],
-        'U' => [17, 17, 17, 17, 17, 17, 14],
-        'V' => [17, 17, 17, 17, 17, 10, 4],
-        'W' => [17, 17, 17, 17, 21, 21, 10],
-        'X' => [17, 17, 10, 4, 10, 17, 17],
-        'Y' => [17, 17, 10, 4, 4, 4, 4],
-        'Z' => [31, 1, 2, 4, 8, 16, 31],
-        '0' => [14, 17, 19, 21, 25, 17, 14],
-        '1' => [4, 12, 4, 4, 4, 4, 14],
-        '2' => [14, 17, 1, 2, 4, 8, 31],
-        '3' => [30, 1, 1, 14, 1, 1, 30],
-        '4' => [2, 6, 10, 18, 31, 2, 2],
-        '5' => [31, 16, 16, 30, 1, 1, 30],
-        '6' => [14, 16, 16, 30, 17, 17, 14],
-        '7' => [31, 1, 2, 4, 8, 8, 8],
-        '8' => [14, 17, 17, 14, 17, 17, 14],
-        '9' => [14, 17, 17, 15, 1, 1, 14],
-        '-' => [0, 0, 0, 31, 0, 0, 0],
-        '.' => [0, 0, 0, 0, 0, 12, 12],
-        '\'' => [4, 4, 8, 0, 0, 0, 0],
-        _ => [0; 7],
-    }
 }
 
 pub fn generate_project(spec: &GenerationSpec, output_dir: &Path) -> Result<ProjectManifest> {
@@ -1139,7 +1295,7 @@ fn generate_project_inner(
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
     if spec.tray.enabled {
-        let tray_mesh = build_tray(spec, height_field);
+        let tray_mesh = build_tray(spec, height_field)?;
         let tray_stl_path = output_dir.join("terrain-tray.stl");
         write_binary_stl(&tray_mesh, &tray_stl_path)?;
         artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
@@ -2133,7 +2289,7 @@ mod tests {
             "test",
         )
         .unwrap();
-        let mesh = build_tray(&spec, Some(&height));
+        let mesh = build_tray(&spec, Some(&height)).unwrap();
         assert_watertight(&mesh);
         assert!(mesh.materials.contains(&SurfaceClass::Rock));
         assert!(mesh.materials.contains(&SurfaceClass::Forest));
@@ -2152,6 +2308,48 @@ mod tests {
             raised_label
                 .iter()
                 .all(|vertex| vertex[1] < spec.tray.rim_width_mm)
+        );
+    }
+
+    #[test]
+    fn tray_label_uses_smooth_vector_curves() {
+        let label = TrayLabel {
+            text: "O".into(),
+            origin_x: 1.0,
+            baseline_y: 1.0,
+            scale: 0.005,
+        };
+        let mut builder = MeshBuilder::default();
+        label.add_embossed_shapes(&mut builder, 3.0).unwrap();
+        let mesh = builder.finish("vector-label");
+        assert_watertight(&mesh);
+
+        let slanted_side_edges = mesh
+            .triangles
+            .iter()
+            .filter(|triangle| {
+                let vertices = triangle.map(|index| mesh.vertices[index as usize]);
+                let spans_height = vertices
+                    .iter()
+                    .map(|vertex| vertex[2])
+                    .fold(f32::INFINITY, f32::min)
+                    < vertices
+                        .iter()
+                        .map(|vertex| vertex[2])
+                        .fold(f32::NEG_INFINITY, f32::max);
+                spans_height
+                    && (0..3).any(|index| {
+                        let a = vertices[index];
+                        let b = vertices[(index + 1) % 3];
+                        (a[2] - b[2]).abs() < 0.000_01
+                            && (a[0] - b[0]).abs() > 0.000_01
+                            && (a[1] - b[1]).abs() > 0.000_01
+                    })
+            })
+            .count();
+        assert!(
+            slanted_side_edges > 24,
+            "expected a smooth O outline, found {slanted_side_edges} curved segments"
         );
     }
 

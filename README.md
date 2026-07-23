@@ -61,7 +61,9 @@ assembled map.
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z
 scale controls vertical exaggeration against the map's plan scale. Buildings
-can run with or without surface color output.
+can run with or without surface color output. In color output, roofs and walls
+use their own editable building material instead of inheriting the land-cover
+color beneath each footprint.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests

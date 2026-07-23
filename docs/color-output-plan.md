@@ -2,13 +2,14 @@
 
 ## Goal
 
-Generate a five-color mountain puzzle whose printable surface marks:
+Generate a six-color mountain puzzle whose printable surface marks:
 
 - forest in dark green;
 - exposed rock and other ground in warm gray;
 - snow and ice in off-white.
 - permanent water in blue.
 - prominent roads in ochre.
+- buildings in warm tan.
 
 The first reference case is the existing Mount Rainier example. The single-color
 STL files must remain available. The 3MF file becomes the main color output.
@@ -51,7 +52,8 @@ Sources:
 
 ### Paint only the visible terrain surface
 
-The top surface gets forest, rock, snow, water, or roads. Side walls and the
+The terrain surface gets forest, rock, snow, water, or roads. Raised building
+roofs and walls use a separate building material. Piece side walls and the
 underside use the rock filament. This keeps the pieces strong and cuts filament
 changes compared with making each color a solid volume.
 
@@ -64,6 +66,7 @@ The default palette is:
 | Snow | `#F4F3EC` | natural white matte PLA |
 | Water | `#2F76B5` | medium blue matte PLA |
 | Road | `#D8A33C` | ochre or amber matte PLA |
+| Building | `#B8A890` | warm tan or architectural gray PLA |
 
 The colors are labels, not fixed filament brands. Bambu Studio should let the
 user map each label to an AMS slot.
@@ -86,7 +89,7 @@ that smaller patches add filament changes and may vanish in the sliced output.
 Add these core types:
 
 ```text
-SurfaceClass = Forest | Rock | Snow | Water | Road
+SurfaceClass = Forest | Rock | Snow | Water | Road | Building
 SurfacePalette = colors and filament labels
 SurfaceField = classified raster plus indexed vector lines and areas
 ColorOutputSpec = enabled, palette, minimum patch size, side color
@@ -103,7 +106,7 @@ triangles always receive the chosen side color.
 ## 3MF output
 
 Use the standard 3MF Materials and Properties Extension. Add one color group
-with the five palette entries, then attach a flat property to each triangle
+with the six palette entries, then attach a flat property to each triangle
 with `pid` and equal `p1`, `p2`, and `p3` values. Keep geometry and color data
 separate in the Rust mesh model.
 
@@ -118,8 +121,8 @@ Reference:
 
 Add a **Color terrain** section below the relief controls:
 
-- Off / Rock–forest–snow–water–road mode;
-- five editable color swatches;
+- Off / Rock–forest–snow–water–road–building mode;
+- six editable color swatches;
 - minimum color patch size;
 - road output toggle and print width;
 - adaptive road-width toggle for dense maps;
@@ -161,7 +164,7 @@ offer a rock-only export rather than silently inventing classes.
 ### 5. Print validation
 
 - Open the Mount Rainier 3MF in the current Bambu Studio release.
-- Confirm five named colors map to the intended filaments.
+- Confirm six named colors map to the intended filaments.
 - Confirm all nine pieces stay manifold and retain their snug seams.
 - Slice a representative center piece and inspect its top layers.
 - Print a small test piece before treating the palette and 1.2 mm patch size as
@@ -176,7 +179,7 @@ offer a rock-only export rather than silently inventing classes.
 - Road widths follow the selected print width and road class.
 - Roads, trails, and waterways remain smooth when mesh detail increases.
 - The web preview and 3MF triangle classes match.
-- The 3MF opens with five usable colors and no mesh repair.
+- The 3MF opens with six usable colors and no mesh repair.
 - Each piece remains one closed solid.
 - Single-color STL output remains unchanged.
 - A missing land-cover tile never produces false color without a warning.

@@ -47,6 +47,7 @@ type GenerationSpec = {
     snow_color: string;
     water_color: string;
     road_color: string;
+    building_color: string;
     roads_enabled: boolean;
     adaptive_road_widths: boolean;
     osm_water_enabled: boolean;
@@ -85,6 +86,7 @@ type PreviewData = {
     snow: string;
     water: string;
     road: string;
+    building: string;
   };
   surface_coverage?: {
     rock: number;
@@ -92,6 +94,7 @@ type PreviewData = {
     snow: number;
     water: number;
     road: number;
+    building: number;
   };
   surface_source?: string;
 };
@@ -143,6 +146,7 @@ const initialSpec: GenerationSpec = {
     snow_color: "#F4F3EC",
     water_color: "#2F76B5",
     road_color: "#D8A33C",
+    building_color: "#B8A890",
     roads_enabled: true,
     adaptive_road_widths: true,
     osm_water_enabled: true,
@@ -687,7 +691,9 @@ function ReliefPreview({
                 ? palette?.water
                 : surfaceClass === 4
                   ? palette?.road
-                  : palette?.rock;
+                  : surfaceClass === 5
+                    ? palette?.building
+                    : palette?.rock;
         context.beginPath();
         context.moveTo(a.x, a.y);
         context.lineTo(b.x, b.y);
@@ -776,10 +782,13 @@ function ReliefPreview({
               ["Snow", "snow", spec.color_output.snow_color],
               ["Water", "water", spec.color_output.water_color],
               ["Route", "road", spec.color_output.road_color],
+              ["Building", "building", spec.color_output.building_color],
             ] as const
           )
             .filter(
-              ([, key]) => key !== "road" || spec.color_output.roads_enabled,
+              ([, key]) =>
+                (key !== "road" || spec.color_output.roads_enabled) &&
+                (key !== "building" || spec.buildings.enabled),
             )
             .map(([label, key, color]) => (
               <span key={key}>
@@ -1258,7 +1267,7 @@ export function TerrainStudio() {
             <div className="color-heading">
               <div>
                 <strong className="color-title">Surface colors</strong>
-                <p>Paint the 3MF from mapped land cover and routes.</p>
+                <p>Paint the 3MF from mapped land cover, routes, and buildings.</p>
               </div>
               <label className="color-toggle">
                 <input
@@ -1281,6 +1290,7 @@ export function TerrainStudio() {
                       ["Snow", "snow_color"],
                       ["Water", "water_color"],
                       ["Route", "road_color"],
+                      ["Building", "building_color"],
                     ] as const
                   ).map(([label, key]) => (
                     <label key={key}>

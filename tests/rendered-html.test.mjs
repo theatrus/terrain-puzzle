@@ -42,6 +42,7 @@ test("server-renders Terrain Puzzle Studio", async () => {
   assert.match(html, /Thin dense road networks/);
   assert.match(html, /Overlay detail/);
   assert.match(html, /Road layer height/);
+  assert.match(html, /#B8A890/i);
   assert.match(html, /SQLite/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

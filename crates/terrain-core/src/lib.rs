@@ -217,6 +217,7 @@ pub struct ColorOutputSpec {
     pub snow_color: String,
     pub water_color: String,
     pub road_color: String,
+    pub building_color: String,
     pub roads_enabled: bool,
     pub adaptive_road_widths: bool,
     pub osm_water_enabled: bool,
@@ -234,6 +235,7 @@ impl Default for ColorOutputSpec {
             snow_color: "#F4F3EC".into(),
             water_color: "#2F76B5".into(),
             road_color: "#D8A33C".into(),
+            building_color: "#B8A890".into(),
             roads_enabled: true,
             adaptive_road_widths: true,
             osm_water_enabled: true,
@@ -252,6 +254,7 @@ impl ColorOutputSpec {
             ("snow", &self.snow_color),
             ("water", &self.water_color),
             ("road", &self.road_color),
+            ("building", &self.building_color),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -284,6 +287,7 @@ pub enum SurfaceClass {
     Snow,
     Water,
     Road,
+    Building,
 }
 
 impl SurfaceClass {
@@ -294,6 +298,7 @@ impl SurfaceClass {
             Self::Snow => 2,
             Self::Water => 3,
             Self::Road => 4,
+            Self::Building => 5,
         }
     }
 }
@@ -604,7 +609,7 @@ impl SurfaceField {
             let class = original[start];
             let mut queue = VecDeque::from([start]);
             let mut component = Vec::new();
-            let mut neighbours = [0_usize; 5];
+            let mut neighbours = [0_usize; 6];
             visited[start] = true;
             while let Some(index) = queue.pop_front() {
                 component.push(index);
@@ -640,6 +645,7 @@ impl SurfaceField {
                         2 => SurfaceClass::Snow,
                         3 => SurfaceClass::Water,
                         4 => SurfaceClass::Road,
+                        5 => SurfaceClass::Building,
                         _ => SurfaceClass::Rock,
                     })
                     .unwrap_or(SurfaceClass::Rock);
@@ -651,6 +657,9 @@ impl SurfaceField {
     }
 
     fn at(&self, u: f32, v: f32) -> SurfaceClass {
+        if self.building_height_at(u, v) > 0.0 {
+            return SurfaceClass::Building;
+        }
         let bucket = vector_bucket_index(u, v);
         let line_indices = &self.vector_line_buckets[bucket];
         if line_indices.iter().any(|index| {
@@ -702,10 +711,14 @@ impl SurfaceField {
         self.building_heights_m[y * self.width + x]
     }
 
-    fn coverage(&self) -> [f32; 5] {
-        let mut counts = [0_usize; 5];
-        for class in &self.classes {
-            counts[class.material_index() as usize] += 1;
+    fn coverage(&self) -> [f32; 6] {
+        let mut counts = [0_usize; 6];
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let u = x as f32 / (self.width - 1) as f32;
+                let v = y as f32 / (self.height - 1) as f32;
+                counts[self.at(u, v).material_index() as usize] += 1;
+            }
         }
         let total = self.classes.len() as f32;
         counts.map(|count| count as f32 * 100.0 / total)
@@ -2002,6 +2015,7 @@ fn generate_project_inner(
         tray_spec.color_output.snow_color = spec.tray.label_color.clone();
         tray_spec.color_output.water_color = spec.tray.tray_color.clone();
         tray_spec.color_output.road_color = spec.tray.tray_color.clone();
+        tray_spec.color_output.building_color = spec.tray.tray_color.clone();
         let tray_3mf_path = output_dir.join("terrain-tray.3mf");
         let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
         tray_writer.write_mesh(&tray_mesh)?;
@@ -2197,10 +2211,21 @@ fn build_piece(
         top_materials.push(
             surface_field
                 .map(|field| {
-                    field.at(
-                        (centroid[0] + origin_x) / assembled_width,
-                        (centroid[1] + origin_y) / assembled_height,
-                    )
+                    if spec.buildings.enabled
+                        && positions.iter().any(|position| {
+                            field.building_height_at(
+                                (position.x as f32 + origin_x) / assembled_width,
+                                (position.y as f32 + origin_y) / assembled_height,
+                            ) > 0.0
+                        })
+                    {
+                        SurfaceClass::Building
+                    } else {
+                        field.at(
+                            (centroid[0] + origin_x) / assembled_width,
+                            (centroid[1] + origin_y) / assembled_height,
+                        )
+                    }
                 })
                 .unwrap_or(SurfaceClass::Rock),
         );
@@ -2766,6 +2791,7 @@ fn build_preview(
             "snow": spec.color_output.snow_color,
             "water": spec.color_output.water_color,
             "road": spec.color_output.road_color,
+            "building": spec.color_output.building_color,
         });
         preview["surface_coverage"] = serde_json::json!({
             "rock": coverage[0],
@@ -2773,6 +2799,7 @@ fn build_preview(
             "snow": coverage[2],
             "water": coverage[3],
             "road": coverage[4],
+            "building": coverage[5],
         });
         preview["surface_source"] = serde_json::json!(field.source);
     }
@@ -2877,12 +2904,13 @@ impl<'a> ThreeMfWriter<'a> {
         if spec.color_output.enabled {
             writeln!(
                 zip,
-                "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>",
+                "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>",
                 spec.color_output.rock_color,
                 spec.color_output.forest_color,
                 spec.color_output.snow_color,
                 spec.color_output.water_color,
                 spec.color_output.road_color,
+                spec.color_output.building_color,
             )?;
         }
         Ok(Self {
@@ -3369,6 +3397,10 @@ mod tests {
             rows: 2,
             columns: 2,
             samples_per_piece: 16,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
             color_output: ColorOutputSpec {
                 enabled: true,
                 ..ColorOutputSpec::default()
@@ -3377,7 +3409,7 @@ mod tests {
         };
         let height =
             HeightField::new(5, 5, (0..25).map(|value| value as f32).collect(), "test").unwrap();
-        let surface = SurfaceField::new(
+        let mut surface = SurfaceField::new(
             5,
             5,
             (0..25)
@@ -3392,6 +3424,10 @@ mod tests {
             "test surface",
         )
         .unwrap();
+        surface.paint_building(
+            &[[0.35, 0.35], [0.65, 0.35], [0.65, 0.65], [0.35, 0.65]],
+            12.0,
+        );
 
         generate_project_with_fields(&spec, &height, Some(&surface), &output_dir).unwrap();
 
@@ -3412,11 +3448,13 @@ mod tests {
         assert!(model.contains("color=\"#28543AFF\""));
         assert!(model.contains("color=\"#2F76B5FF\""));
         assert!(model.contains("color=\"#D8A33CFF\""));
+        assert!(model.contains("color=\"#B8A890FF\""));
         assert!(model.contains("pid=\"1000\""));
         assert!(model.contains("p1=\"1\""));
         assert!(model.contains("p1=\"2\""));
         assert!(model.contains("p1=\"3\""));
         assert!(model.contains("p1=\"4\""));
+        assert!(model.contains("p1=\"5\""));
         assert_eq!(model.matches("<object id=").count(), 4);
         assert_eq!(model.matches("<item objectid=").count(), 4);
 
@@ -3427,6 +3465,8 @@ mod tests {
         assert_eq!(preview["surface_palette"]["rock"], "#7C7468");
         assert_eq!(preview["surface_palette"]["water"], "#2F76B5");
         assert_eq!(preview["surface_palette"]["road"], "#D8A33C");
+        assert_eq!(preview["surface_palette"]["building"], "#B8A890");
+        assert!(preview["surface_coverage"]["building"].as_f64().unwrap() > 0.0);
         assert_eq!(preview["surface_source"], "test surface");
 
         std::fs::remove_dir_all(output_dir).unwrap();
@@ -3442,7 +3482,7 @@ mod tests {
     }
 
     #[test]
-    fn old_color_specs_gain_the_default_water_color() {
+    fn old_color_specs_gain_new_default_colors() {
         let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
             "color_output": {
                 "enabled": true,
@@ -3461,6 +3501,7 @@ mod tests {
         assert_eq!(spec.buildings.z_scale, 5.0);
         assert_eq!(spec.color_output.water_color, "#2F76B5");
         assert_eq!(spec.color_output.road_color, "#D8A33C");
+        assert_eq!(spec.color_output.building_color, "#B8A890");
         assert!(spec.color_output.roads_enabled);
         assert!(spec.color_output.adaptive_road_widths);
         assert!(spec.color_output.osm_water_enabled);
@@ -3521,6 +3562,7 @@ mod tests {
             &[[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]],
             12.0,
         );
+        assert_eq!(field.at(0.5, 0.5), SurfaceClass::Building);
         assert_eq!(field.building_height_at(0.5, 0.5), 12.0);
         assert_eq!(field.building_height_at(0.76, 0.5), 0.0);
         assert_eq!(field.building_height_at(0.1, 0.1), 0.0);
@@ -3652,6 +3694,7 @@ mod tests {
             ..GenerationSpec::default()
         };
         let raised = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert!(raised.materials.contains(&SurfaceClass::Building));
         let flat = build_piece(
             &GenerationSpec {
                 buildings: BuildingSpec {

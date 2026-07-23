@@ -2010,8 +2010,7 @@ fn generate_project_inner(
     }
 
     let preview_path = output_dir.join("preview.json");
-    let preview_size = (spec.rows.max(spec.columns) * spec.effective_samples_per_piece() + 1)
-        .clamp(96, 192) as usize;
+    let preview_size = preview_sample_count(spec);
     let preview = build_preview(spec, height_field, surface_field, preview_size);
     fs::write(&preview_path, serde_json::to_vec(&preview)?)
         .with_context(|| format!("write {}", preview_path.display()))?;
@@ -2035,6 +2034,10 @@ fn generate_project_inner(
         .artifacts
         .push(file_artifact(&manifest_path, "application/json")?);
     Ok(complete)
+}
+
+fn preview_sample_count(spec: &GenerationSpec) -> usize {
+    (spec.rows.max(spec.columns) * spec.effective_samples_per_piece() + 1).clamp(96, 384) as usize
 }
 
 fn build_piece(
@@ -2116,6 +2119,20 @@ fn build_piece(
                 points.push(Point2::new(x as f64, y as f64));
             }
         }
+    }
+    if spec.buildings.enabled
+        && let Some(field) = surface_field
+    {
+        add_building_boundary_detail_points(
+            field,
+            &outline,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+            spacing,
+            &mut points,
+        );
     }
 
     let triangulation =
@@ -2235,6 +2252,88 @@ fn build_piece(
         triangles,
         materials,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_building_boundary_detail_points(
+    surface_field: &SurfaceField,
+    piece_outline: &[[f32; 2]],
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+    terrain_spacing: f32,
+    points: &mut Vec<Point2<f64>>,
+) {
+    let edge_spacing = terrain_spacing.clamp(0.04, 0.2);
+    let wall_band = (edge_spacing * 0.2).clamp(0.015, 0.04);
+    let piece_bounds = piece_outline.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |bounds, point| {
+            [
+                bounds[0].min((point[0] + origin_x) / assembled_width),
+                bounds[1].min((point[1] + origin_y) / assembled_height),
+                bounds[2].max((point[0] + origin_x) / assembled_width),
+                bounds[3].max((point[1] + origin_y) / assembled_height),
+            ]
+        },
+    );
+    for area in surface_field
+        .vector_areas
+        .iter()
+        .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
+        .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
+    {
+        for index in 0..area.points.len() {
+            let start = area.points[index];
+            let end = area.points[(index + 1) % area.points.len()];
+            let delta_mm = [
+                (end[0] - start[0]) * assembled_width,
+                (end[1] - start[1]) * assembled_height,
+            ];
+            let length_mm = delta_mm[0].hypot(delta_mm[1]);
+            if length_mm <= f32::EPSILON {
+                continue;
+            }
+            let samples = (length_mm / edge_spacing).ceil().max(1.0) as usize;
+            let normal = [-delta_mm[1] / length_mm, delta_mm[0] / length_mm];
+            for sample in 0..samples {
+                let t = sample as f32 / samples as f32;
+                let center = [
+                    start[0] + (end[0] - start[0]) * t,
+                    start[1] + (end[1] - start[1]) * t,
+                ];
+                let plus = [
+                    center[0] + normal[0] * wall_band / assembled_width,
+                    center[1] + normal[1] * wall_band / assembled_height,
+                ];
+                let inward_sign = if point_in_polygon(plus, &area.points) {
+                    1.0
+                } else {
+                    -1.0
+                };
+                for side in [-1.0_f32, 1.0] {
+                    let offset = side * inward_sign * wall_band;
+                    let local = [
+                        center[0] * assembled_width - origin_x + normal[0] * offset,
+                        center[1] * assembled_height - origin_y + normal[1] * offset,
+                    ];
+                    if point_in_polygon(local, piece_outline) {
+                        points.push(Point2::new(local[0] as f64, local[1] as f64));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn bounds_overlap(left: [f32; 4], right: [f32; 4]) -> bool {
+    left[0] <= right[2] && left[2] >= right[0] && left[1] <= right[3] && left[3] >= right[1]
 }
 
 fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Vec<[f32; 2]> {
@@ -3436,6 +3535,49 @@ mod tests {
             ..GenerationSpec::default()
         };
         assert!((building_height_mm(&spec, Some(&field), 0.5, 0.5) - 2.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn building_walls_gain_dense_vector_boundary_vertices() {
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "buildings").unwrap();
+        field.paint_building(&[[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]], 12.0);
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 1,
+            columns: 1,
+            samples_per_piece: 32,
+            overlay_samples_per_piece: 32,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 2.0,
+            },
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        let mut edge_y = mesh
+            .vertices
+            .iter()
+            .filter(|point| (point[0] - 40.0).abs() < 0.06 && (40.0..60.0).contains(&point[1]))
+            .map(|point| point[1])
+            .collect::<Vec<_>>();
+        edge_y.sort_by(f32::total_cmp);
+        edge_y.dedup_by(|a, b| (*a - *b).abs() < 0.001);
+        assert!(edge_y.len() >= 90);
+        assert!(edge_y.windows(2).all(|pair| pair[1] - pair[0] <= 0.21));
+    }
+
+    #[test]
+    fn assembled_preview_keeps_more_overlay_detail() {
+        let spec = GenerationSpec {
+            rows: 4,
+            columns: 4,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert_eq!(preview_sample_count(&spec), 384);
     }
 
     #[test]

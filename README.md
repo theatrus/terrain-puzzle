@@ -44,7 +44,9 @@ secondary roads as smooth, print-safe vector lines. If none cross the selected
 area, it draws paths, footways, bridleways, tracks, and cycleways as a trail
 fallback. Rivers, streams, canals, and mapped water areas use the same vector
 path so they stay smooth and flush with the terrain. Building footprints keep
-their straight mapped edges. The 3MF stores standard triangle color properties.
+their straight mapped edges, with dense local mesh detail along each wall
+instead of a blocky whole-map sampling edge. The 3MF stores standard triangle
+color properties.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
 networks. OpenStreetMap water can be disabled without hiding WorldCover water.
@@ -53,7 +55,8 @@ STL files stay single-color but retain the raised road geometry.
 Overlay detail is separate from the base terrain setting. It defaults to 112
 samples per piece and can rise to 192, giving roads, buildings, water, snow,
 forest, and rock boundaries a finer mesh without forcing the same setting on
-plain terrain jobs.
+plain terrain jobs. Generated browser previews use up to 384 samples across the
+assembled map.
 
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z

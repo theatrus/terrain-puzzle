@@ -48,6 +48,8 @@ type GenerationSpec = {
     water_color: string;
     road_color: string;
     roads_enabled: boolean;
+    adaptive_road_widths: boolean;
+    osm_water_enabled: boolean;
     road_width_mm: number;
     road_height_mm: number;
     minimum_patch_mm: number;
@@ -142,7 +144,9 @@ const initialSpec: GenerationSpec = {
     water_color: "#2F76B5",
     road_color: "#D8A33C",
     roads_enabled: true,
-    road_width_mm: 1,
+    adaptive_road_widths: true,
+    osm_water_enabled: true,
+    road_width_mm: 0.7,
     road_height_mm: 0.2,
     minimum_patch_mm: 1.2,
   },
@@ -1303,6 +1307,21 @@ export function TerrainStudio() {
                   <label className="color-toggle">
                     <input
                       type="checkbox"
+                      checked={spec.color_output.osm_water_enabled}
+                      onChange={(event) =>
+                        updateColor("osm_water_enabled", event.target.checked)
+                      }
+                    />
+                    <span>OpenStreetMap waterways</span>
+                  </label>
+                  <small>
+                    Adds smooth rivers, streams, canals, and mapped water areas
+                  </small>
+                </div>
+                <div className="road-options">
+                  <label className="color-toggle">
+                    <input
+                      type="checkbox"
                       checked={spec.color_output.roads_enabled}
                       onChange={(event) =>
                         updateColor("roads_enabled", event.target.checked)
@@ -1318,11 +1337,29 @@ export function TerrainStudio() {
                       label="Route print width"
                       value={spec.color_output.road_width_mm}
                       unit=" mm"
-                      min={0.6}
+                      min={0.4}
                       max={4}
-                      step={0.2}
+                      step={0.1}
                       onChange={(value) => updateColor("road_width_mm", value)}
                     />
+                    <div className="road-options">
+                      <label className="color-toggle">
+                        <input
+                          type="checkbox"
+                          checked={spec.color_output.adaptive_road_widths}
+                          onChange={(event) =>
+                            updateColor(
+                              "adaptive_road_widths",
+                              event.target.checked,
+                            )
+                          }
+                        />
+                        <span>Thin dense road networks</span>
+                      </label>
+                      <small>
+                        Reduces route width as mapped road coverage rises
+                      </small>
+                    </div>
                     <RangeField
                       label="Road layer height"
                       value={spec.color_output.road_height_mm}
@@ -1335,12 +1372,13 @@ export function TerrainStudio() {
                   </>
                 )}
                 <p className="color-note">
-                  Water shows mapped permanent lakes, reservoirs, and rivers.
-                  Narrow streams below 10 m may not appear. Routes come from
-                  OpenStreetMap. The generator uses prominent roads first, then
-                  trails only when no roads cross the model. Tunnels stay
-                  hidden. Roads rise by the selected single-layer height. Snow
-                  is not live. Sides and bottoms use the rock color.
+                  WorldCover supplies permanent water. OpenStreetMap waterways
+                  add smooth lakes, rivers, streams, and canals when enabled.
+                  Routes come from OpenStreetMap. The generator uses prominent
+                  roads first, then trails only when no roads cross the model.
+                  Tunnels stay hidden. Roads rise by the selected single-layer
+                  height. Snow is not live. Sides and bottoms use the rock
+                  color.
                 </p>
               </>
             )}

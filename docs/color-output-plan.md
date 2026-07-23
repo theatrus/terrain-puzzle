@@ -30,9 +30,10 @@ OpenStreetMap adds motorway, trunk, primary, and secondary road geometry after
 the land-cover mask is clean. It also adds rivers, streams, canals, and mapped
 water areas. Linear features use smooth vector paths rather than raster cells.
 Higher road and waterway classes get wider print lines. The generator skips
-tunnels and keeps bridges visible. The default primary-road width is 1.0 mm;
+tunnels and keeps bridges visible. The default primary-road width is 0.7 mm;
 motorway and trunk lines are wider, while secondary roads and links are
-narrower. If no visible prominent road crosses the model, the generator falls
+narrower. Dense-road adjustment can reduce those widths toward a printable 0.4
+mm floor. If no visible prominent road crosses the model, the generator falls
 back to paths, footways, bridleways, tracks, and cycleways. Trails never appear
 on top of a road network.
 
@@ -121,6 +122,8 @@ Add a **Color terrain** section below the relief controls:
 - five editable color swatches;
 - minimum color patch size;
 - road output toggle and print width;
+- adaptive road-width toggle for dense maps;
+- OpenStreetMap water toggle;
 - side and underside color;
 - a note that snow is not live and fine map features remain print-width limited.
 

@@ -23,7 +23,9 @@ pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry. The service caches elevation, ESA WorldCover, and OpenStreetMap input
-under the operating system's user cache directory.
+under the operating system's user cache directory. OpenStreetMap entries keep
+the raw response, so width, density, color, and visibility changes reuse the
+same download.
 
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
@@ -35,7 +37,9 @@ fallback. Rivers, streams, canals, and mapped water areas use the same vector
 path so they stay smooth and flush with the terrain. Building footprints keep
 their straight mapped edges. The 3MF stores standard triangle color properties.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
-mm. STL files stay single-color but retain the raised road geometry.
+mm. Road width starts at 0.7 mm and can thin automatically in dense road
+networks. OpenStreetMap water can be disabled without hiding WorldCover water.
+STL files stay single-color but retain the raised road geometry.
 
 Overlay detail is separate from the base terrain setting. It defaults to 112
 samples per piece and can rise to 192, giving roads, buildings, water, snow,

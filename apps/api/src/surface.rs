@@ -71,6 +71,11 @@ struct WaterCounts {
     areas: usize,
 }
 
+struct RouteFeature {
+    points: Vec<[f32; 2]>,
+    width_scale: f32,
+}
+
 pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Result<SurfaceField> {
     let samples = spec.effective_samples_per_piece();
     let width = (spec.columns * samples + 1) as usize;
@@ -121,11 +126,13 @@ pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Resul
     let mut field = SurfaceField::new(width, height, classes, source)?;
     if spec.color_output.enabled {
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
-        let counts = paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
-        field.source.push_str(&format!(
-            "; waterways: {} lines and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-            counts.lines, counts.areas
-        ));
+        if spec.color_output.osm_water_enabled {
+            let counts = paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
+            field.source.push_str(&format!(
+                "; waterways: {} lines and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                counts.lines, counts.areas
+            ));
+        }
     }
     if spec.color_output.enabled && spec.color_output.roads_enabled {
         let counts = paint_roads_or_trails(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
@@ -250,7 +257,7 @@ fn paint_osm_ways(
     response: OverpassResponse,
     width_scale: fn(&HashMap<String, String>) -> Option<f32>,
 ) -> usize {
-    let mut painted = 0;
+    let mut features = Vec::new();
     for way in response.elements {
         if way.geometry.len() < 2 || is_tunnel(&way.tags) {
             continue;
@@ -258,16 +265,47 @@ fn paint_osm_ways(
         let Some(scale) = width_scale(&way.tags) else {
             continue;
         };
-        let points = normalized_osm_points(&way, spec, bounds);
+        features.push(RouteFeature {
+            points: normalized_osm_points(&way, spec, bounds),
+            width_scale: scale,
+        });
+    }
+    let density_scale = if spec.color_output.adaptive_road_widths {
+        route_density_scale(spec, &features)
+    } else {
+        1.0
+    };
+    for feature in &features {
         field.paint_polyline(
-            &points,
+            &feature.points,
             spec.width_mm,
-            spec.color_output.road_width_mm * scale,
+            (spec.color_output.road_width_mm * feature.width_scale * density_scale).max(0.4),
             SurfaceClass::Road,
         );
-        painted += 1;
     }
-    painted
+    features.len()
+}
+
+fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 {
+    let printed_length = features
+        .iter()
+        .map(|feature| {
+            feature
+                .points
+                .windows(2)
+                .map(|points| {
+                    let width = (points[1][0] - points[0][0]) * spec.width_mm;
+                    let height = (points[1][1] - points[0][1]) * spec.height_mm();
+                    width.hypot(height)
+                })
+                .sum::<f32>()
+                * spec.color_output.road_width_mm
+                * feature.width_scale
+        })
+        .sum::<f32>();
+    let model_area = spec.width_mm * spec.height_mm();
+    let estimated_coverage = printed_length / model_area.max(f32::EPSILON);
+    (0.06 / estimated_coverage.max(0.06)).clamp(0.35, 1.0)
 }
 
 fn paint_buildings(
@@ -333,10 +371,7 @@ fn fetch_osm_response(
 ) -> Result<OverpassResponse> {
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create OpenStreetMap cache {}", cache_dir.display()))?;
-    let cache_path = cache_dir.join(format!(
-        "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
-        spec.center_lat, spec.center_lon, spec.ground_span_km,
-    ));
+    let cache_path = osm_cache_path(spec, cache_dir, cache_prefix);
     let (bytes, should_cache) = match fs::read(&cache_path) {
         Ok(bytes) => (bytes, false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -373,6 +408,13 @@ fn fetch_osm_response(
             .with_context(|| format!("cache OpenStreetMap data {}", cache_path.display()))?;
     }
     Ok(response)
+}
+
+fn osm_cache_path(spec: &GenerationSpec, cache_dir: &Path, cache_prefix: &str) -> PathBuf {
+    cache_dir.join(format!(
+        "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
+        spec.center_lat, spec.center_lon, spec.ground_span_km,
+    ))
 }
 
 fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
@@ -687,6 +729,23 @@ mod tests {
     }
 
     #[test]
+    fn thins_dense_road_networks_but_not_sparse_routes() {
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 2,
+            columns: 2,
+            ..GenerationSpec::default()
+        };
+        let route = || RouteFeature {
+            points: vec![[0.0, 0.5], [1.0, 0.5]],
+            width_scale: 1.0,
+        };
+        assert_eq!(route_density_scale(&spec, &[route()]), 1.0);
+        let dense = (0..24).map(|_| route()).collect::<Vec<_>>();
+        assert!(route_density_scale(&spec, &dense) < 0.5);
+    }
+
+    #[test]
     fn builds_trail_fallback_query_and_widths() {
         let query = overpass_query(
             GeoBounds {
@@ -724,6 +783,19 @@ mod tests {
             "natural".into(),
             "water".into()
         )])));
+    }
+
+    #[test]
+    fn osm_cache_keys_ignore_render_settings() {
+        let first = GenerationSpec::default();
+        let mut second = first.clone();
+        second.color_output.road_width_mm = 0.4;
+        second.color_output.adaptive_road_widths = false;
+        second.color_output.osm_water_enabled = false;
+        assert_eq!(
+            osm_cache_path(&first, Path::new("/cache"), "roads"),
+            osm_cache_path(&second, Path::new("/cache"), "roads")
+        );
     }
 
     #[test]

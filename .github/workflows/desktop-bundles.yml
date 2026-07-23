@@ -56,6 +56,10 @@ jobs:
             os: windows-latest
             bundles: msi,nsis
             arch: x64
+          - label: Linux
+            os: ubuntu-22.04
+            bundles: appimage
+            arch: x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -68,6 +72,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux bundle dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
 
       - run: npm ci
 
@@ -165,6 +181,23 @@ jobs:
           Copy-Item $exe[0].FullName `
             "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.exe"
 
+      - name: Stage Linux file
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(target/release/bundle/appimage/*.AppImage)
+          if [[ "${#appimages[@]}" -ne 1 ]]; then
+            echo "::error::Expected one AppImage, found ${#appimages[@]}."
+            exit 1
+          fi
+          mkdir -p release-artifacts
+          cp "${appimages[0]}" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+          chmod +x \
+            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+
       - name: Upload macOS app archive
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
@@ -201,6 +234,15 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Upload Linux AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage
+          path: release-artifacts/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -224,12 +266,12 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           files=(release-artifacts/*)
-          if [[ "${#files[@]}" -ne 4 ]]; then
-            echo "::error::Expected four release files, found ${#files[@]}."
+          if [[ "${#files[@]}" -ne 5 ]]; then
+            echo "::error::Expected five release files, found ${#files[@]}."
             printf '%s\n' "${files[@]}"
             exit 1
           fi
-          for suffix in .msi .exe .app.zip .dmg; do
+          for suffix in .msi .exe .app.zip .dmg .AppImage; do
             matches=(release-artifacts/*"$suffix")
             if [[ "${#matches[@]}" -ne 1 ]]; then
               echo "::error::Expected one $suffix file, found ${#matches[@]}."

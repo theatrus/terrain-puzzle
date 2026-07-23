@@ -100,6 +100,7 @@ plus and minus keys to zoom.
 - Rust 1.96 or newer
 - Node.js 22.13 or newer
 - Windows 10 or 11 for the Windows desktop bundle
+- A 64-bit Linux system for the Linux AppImage
 
 ## Run
 
@@ -140,12 +141,20 @@ data directory. Downloaded map inputs still use the shared OS cache described
 below. Each generated file opens a native Save As dialog, so the app does not
 drop files into Downloads without asking.
 
-GitHub Actions tests the shared code, then builds four installable files:
-Windows `.msi` and `.exe` installers plus macOS `.app.zip` and `.dmg` bundles.
+GitHub Actions tests the shared code, then builds five desktop files: Windows
+`.msi` and `.exe` installers, macOS `.app.zip` and `.dmg` bundles, and a Linux
+`.AppImage`.
 Each file appears as its own workflow artifact. Pushing a version tag such as
-`v0.1.0` runs the same checks and attaches all four files to a GitHub Release.
+`v0.1.0` runs the same checks and attaches all five files to a GitHub Release.
 The tag must match the version in `src-tauri/tauri.conf.json`. The macOS build
 uses an ad-hoc signature for now and is not notarized.
+
+On Linux, make the downloaded AppImage executable before opening it:
+
+```bash
+chmod +x TopoSaic-*-linux-x86_64.AppImage
+./TopoSaic-*-linux-x86_64.AppImage
+```
 
 Windows builds use the Universal CRT that Windows 10 and 11 include and service.
 CI checks each executable's DLL imports and fails if it adds a `VCRUNTIME`,

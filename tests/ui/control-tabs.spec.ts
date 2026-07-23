@@ -108,7 +108,7 @@ test("resizes the preview area to make room for controls", async ({ page }) => {
 
   await expect(resizer).toBeVisible();
   await expect(resizer).toHaveAttribute("aria-orientation", "horizontal");
-  await expect(resizer).toHaveAttribute("aria-valuenow", "62");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "50");
 
   const initialVisualBounds = await visualArea.boundingBox();
   const initialControlBounds = await controls.boundingBox();

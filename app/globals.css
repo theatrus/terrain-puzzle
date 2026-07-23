@@ -145,7 +145,7 @@ a {
 }
 
 .workspace {
-  --visual-height: 62%;
+  --visual-height: 50%;
   display: grid;
   grid-template-rows:
     minmax(180px, var(--visual-height))

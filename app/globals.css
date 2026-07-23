@@ -678,7 +678,7 @@ a {
   border-top: 1px solid var(--line);
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   margin: 25px 0 0;
   padding: 20px 0 0;
 }
@@ -704,11 +704,79 @@ a {
   padding: 10px 6px 8px;
 }
 
+.piece-grid button > span:not(.mini-grid) {
+  font-weight: 720;
+}
+
+.piece-grid button small {
+  font-size: 8px;
+  white-space: nowrap;
+}
+
 .piece-grid button:hover,
 .piece-grid button.active {
   background: var(--ink);
   border-color: var(--ink);
   color: white;
+}
+
+.piece-custom {
+  align-items: end;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 9px;
+  grid-column: 1 / -1;
+  grid-template-columns: 1fr 1fr 1.25fr;
+  margin-top: 7px;
+  padding-top: 14px;
+}
+
+.piece-custom label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.piece-custom select {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  display: block;
+  font: inherit;
+  margin-top: 6px;
+  padding: 9px;
+  width: 100%;
+}
+
+.piece-custom > div {
+  border-left: 2px solid var(--acid);
+  padding: 5px 0 5px 10px;
+}
+
+.piece-custom strong,
+.piece-custom small {
+  display: block;
+}
+
+.piece-custom strong {
+  font-size: 11px;
+}
+
+.piece-custom small {
+  color: var(--muted);
+  font-size: 9px;
+  margin-top: 3px;
+}
+
+.piece-warning {
+  color: #8a4f2d;
+  font-size: 9px;
+  grid-column: 1 / -1;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .mini-grid {
@@ -941,6 +1009,18 @@ a {
 
   .coordinate-row {
     grid-template-columns: 1fr;
+  }
+
+  .piece-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .piece-custom {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .piece-custom > div {
+    grid-column: 1 / -1;
   }
 
   .map-shell,

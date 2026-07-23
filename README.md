@@ -6,6 +6,9 @@ tabs and sockets, and stores job state in SQLite. The web app lets you choose a
 place and tune the printable model, including the mesh detail and surface
 colors.
 
+Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
+pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
+
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry and keeps a local tile cache under `data/dem-cache`.
 

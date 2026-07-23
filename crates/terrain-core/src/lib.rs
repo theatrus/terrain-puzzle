@@ -59,8 +59,8 @@ impl GenerationSpec {
         if !(60.0..=500.0).contains(&self.width_mm) {
             bail!("model width must be between 60 and 500 mm");
         }
-        if !(2..=8).contains(&self.rows) || !(2..=8).contains(&self.columns) {
-            bail!("piece rows and columns must each be between 2 and 8");
+        if !(2..=16).contains(&self.rows) || !(2..=16).contains(&self.columns) {
+            bail!("piece rows and columns must each be between 2 and 16");
         }
         if !(1.0..=12.0).contains(&self.base_mm) {
             bail!("base depth must be between 1 and 12 mm");
@@ -594,8 +594,8 @@ fn piece_outline(
     let top_left = puzzle_grid_point(spec, row + 1, column);
     let nominal_piece_size =
         (spec.width_mm / spec.columns as f32).min(spec.height_mm() / spec.rows as f32);
-    let base_depth = nominal_piece_size * 0.18;
-    let edge_samples = spec.samples_per_piece.clamp(32, 128) as usize;
+    let base_depth = nominal_piece_size * 0.17;
+    let edge_samples = spec.samples_per_piece.clamp(64, 128) as usize;
     let mut outline = Vec::with_capacity(edge_samples * 4);
 
     for index in 0..edge_samples {
@@ -604,7 +604,7 @@ fn piece_outline(
             bottom_left,
             bottom_right,
             shared_edge_pattern(0, row, column),
-            edge_sign(column, row, spec.rows),
+            edge_sign(0, column, row, spec.rows),
             t,
             base_depth,
         ));
@@ -615,7 +615,7 @@ fn piece_outline(
             bottom_right,
             top_right,
             shared_edge_pattern(1, column + 1, row),
-            edge_sign(row, column + 1, spec.columns),
+            edge_sign(1, row, column + 1, spec.columns),
             t,
             base_depth,
         ));
@@ -626,7 +626,7 @@ fn piece_outline(
             top_left,
             top_right,
             shared_edge_pattern(0, row + 1, column),
-            edge_sign(column, row + 1, spec.rows),
+            edge_sign(0, column, row + 1, spec.rows),
             t,
             base_depth,
         ));
@@ -637,7 +637,7 @@ fn piece_outline(
             bottom_left,
             top_left,
             shared_edge_pattern(1, column, row),
-            edge_sign(row, column, spec.columns),
+            edge_sign(1, row, column, spec.columns),
             t,
             base_depth,
         ));
@@ -684,9 +684,9 @@ fn shared_edge_pattern(orientation: u64, line: u32, segment: u32) -> EdgePattern
         ^ (segment as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
     EdgePattern {
         center: 0.43 + edge_noise(seed, 2) * 0.14,
-        radius_along: 0.105 + edge_noise(seed, 3) * 0.05,
-        depth_scale: 0.78 + edge_noise(seed, 4) * 0.47,
-        skew: (edge_noise(seed, 5) - 0.5) * 0.09,
+        radius_along: 0.11 + edge_noise(seed, 3) * 0.035,
+        depth_scale: 0.88 + edge_noise(seed, 4) * 0.24,
+        skew: (edge_noise(seed, 5) - 0.5) * 0.05,
     }
 }
 
@@ -700,13 +700,14 @@ fn edge_noise(seed: u64, lane: u64) -> f32 {
     ((value >> 40) as u32) as f32 / 16_777_215.0
 }
 
-fn edge_sign(segment: u32, line: u32, line_count: u32) -> f32 {
+fn edge_sign(orientation: u64, segment: u32, line: u32, line_count: u32) -> f32 {
     if line == 0 || line == line_count {
         0.0
-    } else if (segment + line).is_multiple_of(2) {
-        1.0
     } else {
-        -1.0
+        let seed = orientation.wrapping_mul(0xA24B_AED4_963E_E407)
+            ^ (line as u64).wrapping_mul(0x9FB2_1C65_1E98_DF25)
+            ^ (segment as u64).wrapping_mul(0xC13F_A9A9_02A6_328F);
+        if edge_noise(seed, 7) < 0.5 { -1.0 } else { 1.0 }
     }
 }
 
@@ -735,37 +736,73 @@ fn puzzle_edge_point(
 }
 
 fn jigsaw_edge(t: f32, pattern: EdgePattern) -> [f32; 2] {
-    let circle_start = [pattern.center - 0.866_025_4 * pattern.radius_along, 0.04];
-    let circle_end = [pattern.center + 0.866_025_4 * pattern.radius_along, 0.04];
-    let join_start = pattern.center - pattern.radius_along - 0.065;
-    let join_end = pattern.center + pattern.radius_along + 0.065;
-    let point = if t < 0.25 {
-        [t / 0.25 * join_start, 0.0]
-    } else if t < 0.35 {
+    let radius = pattern.radius_along;
+    let neck = radius * 0.46;
+    let shoulder_start = pattern.center - radius - 0.085;
+    let shoulder_end = pattern.center + radius + 0.085;
+    let neck_left = [pattern.center - neck, 0.18];
+    let neck_right = [pattern.center + neck, 0.18];
+    let head_left = [pattern.center - radius, 0.58];
+    let head_right = [pattern.center + radius, 0.58];
+    let quarter_circle = 0.552_284_8;
+    let point = if t < 0.26 {
+        [t / 0.26 * shoulder_start, 0.0]
+    } else if t < 0.34 {
         cubic_bezier(
-            [join_start, 0.0],
-            [join_start + 0.04, -0.05],
-            [circle_start[0] + 0.028, 0.04],
-            circle_start,
-            (t - 0.25) / 0.1,
+            [shoulder_start, 0.0],
+            [shoulder_start + 0.045, -0.01],
+            [neck_left[0] - 0.025, 0.04],
+            neck_left,
+            (t - 0.26) / 0.08,
         )
-    } else if t <= 0.65 {
-        let phase = (t - 0.35) / 0.3;
-        let angle = (210.0 - phase * 240.0_f32).to_radians();
-        [
-            pattern.center + angle.cos() * pattern.radius_along,
-            0.36 + angle.sin() * 0.64,
-        ]
-    } else if t < 0.75 {
+    } else if t < 0.42 {
         cubic_bezier(
-            circle_end,
-            [circle_end[0] - 0.028, 0.04],
-            [join_end - 0.04, -0.05],
-            [join_end, 0.0],
-            (t - 0.65) / 0.1,
+            neck_left,
+            [neck_left[0] + 0.012, 0.34],
+            [head_left[0], 0.45],
+            head_left,
+            (t - 0.34) / 0.08,
+        )
+    } else if t < 0.5 {
+        cubic_bezier(
+            head_left,
+            [
+                head_left[0],
+                head_left[1] + (1.0 - head_left[1]) * quarter_circle,
+            ],
+            [pattern.center - radius * quarter_circle, 1.0],
+            [pattern.center, 1.0],
+            (t - 0.42) / 0.08,
+        )
+    } else if t < 0.58 {
+        cubic_bezier(
+            [pattern.center, 1.0],
+            [pattern.center + radius * quarter_circle, 1.0],
+            [
+                head_right[0],
+                head_right[1] + (1.0 - head_right[1]) * quarter_circle,
+            ],
+            head_right,
+            (t - 0.5) / 0.08,
+        )
+    } else if t < 0.66 {
+        cubic_bezier(
+            head_right,
+            [head_right[0], 0.45],
+            [neck_right[0] - 0.012, 0.34],
+            neck_right,
+            (t - 0.58) / 0.08,
+        )
+    } else if t < 0.74 {
+        cubic_bezier(
+            neck_right,
+            [neck_right[0] + 0.025, 0.04],
+            [shoulder_end - 0.045, -0.01],
+            [shoulder_end, 0.0],
+            (t - 0.66) / 0.08,
         )
     } else {
-        [join_end + (t - 0.75) / 0.25 * (1.0 - join_end), 0.0]
+        [shoulder_end + (t - 0.74) / 0.26 * (1.0 - shoulder_end), 0.0]
     };
     [point[0] + pattern.skew * point[1], point[1]]
 }
@@ -1277,8 +1314,10 @@ mod tests {
         let pattern = shared_edge_pattern(0, 1, 0);
         assert_eq!(jigsaw_edge(0.1, pattern)[1], 0.0);
         assert!(jigsaw_edge(0.5, pattern)[1] > 0.99);
-        assert!(jigsaw_edge(0.4, pattern)[0] < jigsaw_edge(0.35, pattern)[0]);
-        assert!(jigsaw_edge(0.6, pattern)[0] > jigsaw_edge(0.65, pattern)[0]);
+        assert!(jigsaw_edge(0.42, pattern)[0] < jigsaw_edge(0.34, pattern)[0] - 0.03);
+        assert!(jigsaw_edge(0.58, pattern)[0] > jigsaw_edge(0.66, pattern)[0] + 0.03);
+        assert_eq!(jigsaw_edge(0.0, pattern)[1], 0.0);
+        assert_eq!(jigsaw_edge(1.0, pattern)[1], 0.0);
     }
 
     #[test]
@@ -1315,7 +1354,7 @@ mod tests {
 
     #[test]
     fn high_detail_outlines_work_for_every_grid_size() {
-        for grid_size in 2..=8 {
+        for grid_size in [2, 4, 8, 12, 16] {
             let spec = GenerationSpec {
                 rows: grid_size,
                 columns: grid_size,

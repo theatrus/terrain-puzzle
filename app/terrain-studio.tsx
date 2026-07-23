@@ -81,8 +81,8 @@ const initialSpec: GenerationSpec = {
   center_lon: -121.7603,
   ground_span_km: 18,
   width_mm: 180,
-  rows: 3,
-  columns: 3,
+  rows: 10,
+  columns: 10,
   base_mm: 2.4,
   relief_mm: 14,
   clearance_mm: 0.14,
@@ -376,9 +376,9 @@ function sharedEdgePattern(
     BigInt.asUintN(64, BigInt(segment) * 0x94d049bb133111ebn);
   return {
     center: 0.43 + edgeNoise(seed, 2n) * 0.14,
-    radiusAlong: 0.105 + edgeNoise(seed, 3n) * 0.05,
-    depthScale: 0.78 + edgeNoise(seed, 4n) * 0.47,
-    skew: (edgeNoise(seed, 5n) - 0.5) * 0.09,
+    radiusAlong: 0.11 + edgeNoise(seed, 3n) * 0.035,
+    depthScale: 0.88 + edgeNoise(seed, 4n) * 0.24,
+    skew: (edgeNoise(seed, 5n) - 0.5) * 0.05,
   };
 }
 
@@ -404,51 +404,90 @@ function puzzleGridPoint(spec: GenerationSpec, row: number, column: number) {
   return { x, y };
 }
 
-function edgeSign(segment: number, line: number, lineCount: number) {
+function edgeSign(
+  orientation: number,
+  segment: number,
+  line: number,
+  lineCount: number,
+) {
   if (line === 0 || line === lineCount) return 0;
-  return (segment + line) % 2 === 0 ? 1 : -1;
+  const seed =
+    BigInt.asUintN(64, BigInt(orientation) * 0xa24baed4963ee407n) ^
+    BigInt.asUintN(64, BigInt(line) * 0x9fb21c651e98df25n) ^
+    BigInt.asUintN(64, BigInt(segment) * 0xc13fa9a902a6328fn);
+  return edgeNoise(seed, 7n) < 0.5 ? -1 : 1;
 }
 
 function jigsawEdge(t: number, pattern: EdgePattern) {
-  const circleStart: [number, number] = [
-    pattern.center - 0.8660254 * pattern.radiusAlong,
-    0.04,
-  ];
-  const circleEnd: [number, number] = [
-    pattern.center + 0.8660254 * pattern.radiusAlong,
-    0.04,
-  ];
-  const joinStart = pattern.center - pattern.radiusAlong - 0.065;
-  const joinEnd = pattern.center + pattern.radiusAlong + 0.065;
+  const radius = pattern.radiusAlong;
+  const neck = radius * 0.46;
+  const shoulderStart = pattern.center - radius - 0.085;
+  const shoulderEnd = pattern.center + radius + 0.085;
+  const neckLeft: [number, number] = [pattern.center - neck, 0.18];
+  const neckRight: [number, number] = [pattern.center + neck, 0.18];
+  const headLeft: [number, number] = [pattern.center - radius, 0.58];
+  const headRight: [number, number] = [pattern.center + radius, 0.58];
+  const quarterCircle = 0.5522848;
   let point;
-  if (t < 0.25) {
-    point = { along: (t / 0.25) * joinStart, offset: 0 };
-  } else if (t < 0.35) {
+  if (t < 0.26) {
+    point = { along: (t / 0.26) * shoulderStart, offset: 0 };
+  } else if (t < 0.34) {
     point = cubicBezier(
-      [joinStart, 0],
-      [joinStart + 0.04, -0.05],
-      [circleStart[0] + 0.028, 0.04],
-      circleStart,
-      (t - 0.25) / 0.1,
+      [shoulderStart, 0],
+      [shoulderStart + 0.045, -0.01],
+      [neckLeft[0] - 0.025, 0.04],
+      neckLeft,
+      (t - 0.26) / 0.08,
     );
-  } else if (t <= 0.65) {
-    const phase = (t - 0.35) / 0.3;
-    const angle = ((210 - phase * 240) * Math.PI) / 180;
-    point = {
-      along: pattern.center + Math.cos(angle) * pattern.radiusAlong,
-      offset: 0.36 + Math.sin(angle) * 0.64,
-    };
-  } else if (t < 0.75) {
+  } else if (t < 0.42) {
     point = cubicBezier(
-      circleEnd,
-      [circleEnd[0] - 0.028, 0.04],
-      [joinEnd - 0.04, -0.05],
-      [joinEnd, 0],
-      (t - 0.65) / 0.1,
+      neckLeft,
+      [neckLeft[0] + 0.012, 0.34],
+      [headLeft[0], 0.45],
+      headLeft,
+      (t - 0.34) / 0.08,
+    );
+  } else if (t < 0.5) {
+    point = cubicBezier(
+      headLeft,
+      [
+        headLeft[0],
+        headLeft[1] + (1 - headLeft[1]) * quarterCircle,
+      ],
+      [pattern.center - radius * quarterCircle, 1],
+      [pattern.center, 1],
+      (t - 0.42) / 0.08,
+    );
+  } else if (t < 0.58) {
+    point = cubicBezier(
+      [pattern.center, 1],
+      [pattern.center + radius * quarterCircle, 1],
+      [
+        headRight[0],
+        headRight[1] + (1 - headRight[1]) * quarterCircle,
+      ],
+      headRight,
+      (t - 0.5) / 0.08,
+    );
+  } else if (t < 0.66) {
+    point = cubicBezier(
+      headRight,
+      [headRight[0], 0.45],
+      [neckRight[0] - 0.012, 0.34],
+      neckRight,
+      (t - 0.58) / 0.08,
+    );
+  } else if (t < 0.74) {
+    point = cubicBezier(
+      neckRight,
+      [neckRight[0] + 0.025, 0.04],
+      [shoulderEnd - 0.045, -0.01],
+      [shoulderEnd, 0],
+      (t - 0.66) / 0.08,
     );
   } else {
     point = {
-      along: joinEnd + ((t - 0.75) / 0.25) * (1 - joinEnd),
+      along: shoulderEnd + ((t - 0.74) / 0.26) * (1 - shoulderEnd),
       offset: 0,
     };
   }
@@ -606,13 +645,13 @@ function ReliefPreview({
     context.lineWidth = 1.7;
     const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
     const baseDepth =
-      Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.18;
+      Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.17;
     for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
       for (let row = 0; row < spec.rows; row += 1) {
         const start = puzzleGridPoint(spec, row, edgeColumn);
         const end = puzzleGridPoint(spec, row + 1, edgeColumn);
         const pattern = sharedEdgePattern(1, edgeColumn, row);
-        const sign = edgeSign(row, edgeColumn, spec.columns);
+        const sign = edgeSign(1, row, edgeColumn, spec.columns);
         context.beginPath();
         for (let step = 0; step <= 64; step += 1) {
           const t = step / 64;
@@ -639,7 +678,7 @@ function ReliefPreview({
         const start = puzzleGridPoint(spec, edgeRow, column);
         const end = puzzleGridPoint(spec, edgeRow, column + 1);
         const pattern = sharedEdgePattern(0, edgeRow, column);
-        const sign = edgeSign(column, edgeRow, spec.rows);
+        const sign = edgeSign(0, column, edgeRow, spec.rows);
         context.beginPath();
         for (let step = 0; step <= 64; step += 1) {
           const t = step / 64;
@@ -1111,7 +1150,7 @@ export function TerrainStudio() {
 
           <fieldset className="piece-grid">
             <legend>Piece layout</legend>
-            {[2, 3, 4, 5].map((count) => (
+            {[4, 6, 8, 10, 12].map((count) => (
               <button
                 type="button"
                 className={
@@ -1136,9 +1175,56 @@ export function TerrainStudio() {
                     <i key={index} />
                   ))}
                 </span>
-                {count}×{count}
+                <span>{count}×{count}</span>
+                <small>{count * count} pieces</small>
               </button>
             ))}
+            <div className="piece-custom">
+              <label>
+                Columns
+                <select
+                  value={spec.columns}
+                  onChange={(event) =>
+                    update("columns", Number(event.target.value))
+                  }
+                >
+                  {Array.from({ length: 15 }, (_, index) => index + 2).map(
+                    (count) => (
+                      <option key={count} value={count}>
+                        {count}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+              <label>
+                Rows
+                <select
+                  value={spec.rows}
+                  onChange={(event) => update("rows", Number(event.target.value))}
+                >
+                  {Array.from({ length: 15 }, (_, index) => index + 2).map(
+                    (count) => (
+                      <option key={count} value={count}>
+                        {count}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+              <div>
+                <strong>{spec.rows * spec.columns} pieces</strong>
+                <small>
+                  About {(spec.width_mm / spec.columns).toFixed(1)} mm wide each
+                </small>
+              </div>
+            </div>
+            {spec.width_mm / spec.columns < 10 && (
+              <p className="piece-warning">
+                These pieces are under 10 mm wide. Increase print width for
+                stronger knobs and easier handling.
+              </p>
+            )}
           </fieldset>
 
           <div className="engine-note">

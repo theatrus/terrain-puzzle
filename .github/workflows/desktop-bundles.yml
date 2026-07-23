@@ -78,7 +78,7 @@ jobs:
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: toposaic-[platform]-[arch]-[bundle]
 
-      - name: Verify static MSVC runtime
+      - name: Verify Windows runtime requirements
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -105,6 +105,6 @@ jobs:
             throw "dumpbin could not inspect the Windows executable."
           }
           $imports
-          if ($imports -Match '(?i)(VCRUNTIME|MSVCP|CONCRT|api-ms-win-crt-|ucrtbase).*\.dll') {
-            throw "The Windows executable still depends on an external MSVC runtime."
+          if ($imports -Match '(?i)(VCRUNTIME|MSVCP|CONCRT).*\.dll') {
+            throw "The Windows executable needs a Visual C++ Redistributable runtime."
           }

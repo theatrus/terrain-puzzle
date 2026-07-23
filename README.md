@@ -87,6 +87,7 @@ job replaces it with the detailed generated preview.
 
 - Rust 1.96 or newer
 - Node.js 22.13 or newer
+- Windows 10 or 11 for the Windows desktop bundle
 
 ## Run
 
@@ -131,10 +132,11 @@ GitHub Actions tests the shared code, then builds macOS app and DMG bundles plus
 Windows MSI and NSIS installers. Run artifacts contain each bundle. The macOS
 build uses an ad-hoc signature for now and is not notarized.
 
-Windows builds link the MSVC C runtime into the executable, so users do not
-need a separate Visual C++ Redistributable install. CI checks the executable's
-DLL imports after each Windows build. The installers download Microsoft's
-WebView2 bootstrapper only when the system does not already have WebView2.
+Windows builds use the Universal CRT that Windows 10 and 11 include and service.
+CI checks each executable's DLL imports and fails if it adds a `VCRUNTIME`,
+`MSVCP`, or `CONCRT` dependency that would need a Visual C++ Redistributable
+install. The installers download Microsoft's WebView2 bootstrapper only when
+the system does not already have WebView2.
 
 ## Storage
 

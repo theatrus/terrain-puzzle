@@ -12,9 +12,9 @@ export async function generateMetadata(): Promise<Metadata> {
     requestHeaders.get("x-forwarded-proto") ??
     (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "Terrain Puzzle Studio";
+  const title = "TopoSaic — Terrain Puzzle";
   const description =
-    "Turn a place into a printable topographic puzzle with a Rust mesh generator.";
+    "Turn a place into a printable terrain puzzle with TopoSaic's Rust mesh generator.";
 
   return {
     metadataBase: new URL(origin),
@@ -29,7 +29,7 @@ export async function generateMetadata(): Promise<Metadata> {
           url: `${origin}/og.png`,
           width: 1200,
           height: 630,
-          alt: "A 3D-printed mountain puzzle beside the Terrain Puzzle title",
+          alt: "A 3D-printed mountain puzzle beside the TopoSaic title and Terrain Puzzle byline",
         },
       ],
     },

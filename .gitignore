@@ -49,5 +49,5 @@ next-env.d.ts
 /target/
 /src-tauri/gen/
 
-# Local Terrain Puzzle state and generated files
+# Local TopoSaic state and generated files
 /data/

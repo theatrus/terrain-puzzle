@@ -1,11 +1,11 @@
 [package]
-name = "terrain-desktop"
+name = "toposaic-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "terrain_desktop_lib"
+name = "toposaic_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

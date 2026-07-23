@@ -41,7 +41,7 @@ fn fetch_height_field_at_size(
 ) -> Result<HeightField> {
     let zoom = choose_zoom(spec, sample_width.max(sample_height));
     let client = Client::builder()
-        .user_agent("terrain-puzzle/0.1 (+local terrain mesh generator)")
+        .user_agent("toposaic/0.1 (+local terrain mesh generator)")
         .timeout(Duration::from_secs(20))
         .build()?;
     let mut tiles: HashMap<(u32, u32), RgbImage> = HashMap::new();

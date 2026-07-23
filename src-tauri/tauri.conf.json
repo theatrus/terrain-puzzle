@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Terrain Puzzle",
+  "productName": "TopoSaic",
   "version": "0.1.0",
-  "identifier": "com.theatrus.terrain-puzzle",
+  "identifier": "com.theatrus.toposaic",
   "build": {
     "beforeDevCommand": "npm run desktop:dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Terrain Puzzle Studio",
+        "title": "TopoSaic — Terrain Puzzle",
         "width": 1440,
         "height": 900,
         "minWidth": 960,
@@ -29,7 +29,7 @@
     "active": true,
     "targets": "all",
     "category": "GraphicsAndDesign",
-    "shortDescription": "Create printable terrain puzzles from real map data.",
+    "shortDescription": "TopoSaic creates printable terrain puzzles from real map data.",
     "macOS": {
       "signingIdentity": "-"
     }

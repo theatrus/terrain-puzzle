@@ -15,7 +15,7 @@ pub fn root() -> Result<PathBuf> {
     if let Some(value) = env::var_os("TERRAIN_CACHE_DIR").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(value));
     }
-    ProjectDirs::from("com", "theatrus", "terrain-puzzle")
+    ProjectDirs::from("com", "theatrus", "toposaic")
         .map(|directories| directories.cache_dir().to_path_buf())
         .context("find the OS cache directory; set TERRAIN_CACHE_DIR to choose one")
 }
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn atomically_stores_cached_input() {
         let directory =
-            std::env::temp_dir().join(format!("terrain-puzzle-cache-test-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("toposaic-cache-test-{}", Uuid::new_v4()));
         let path = directory.join("tiles").join("sample.bin");
         store(&path, b"first").unwrap();
         store(&path, b"second").unwrap();

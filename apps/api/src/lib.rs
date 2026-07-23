@@ -110,10 +110,10 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .with_context(|| format!("create jobs directory {}", jobs_dir.display()))?;
     std::fs::create_dir_all(&map_cache_dir)
         .with_context(|| format!("create map cache directory {}", map_cache_dir.display()))?;
-    let connection = Connection::open(data_dir.join("terrain-puzzle.sqlite3"))?;
+    let connection = Connection::open(data_dir.join("toposaic.sqlite3"))?;
     migrate(&connection)?;
     let geocoder = Client::builder()
-        .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .user_agent("toposaic/0.1 (+https://github.com/theatrus/terrain-puzzle)")
         .timeout(Duration::from_secs(12))
         .build()?;
 

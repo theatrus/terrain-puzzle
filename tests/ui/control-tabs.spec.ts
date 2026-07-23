@@ -4,6 +4,12 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await page.goto("/");
 
   const generate = page.getByRole("button", { name: /^Generate/ });
+  await expect(page.getByRole("link", { name: "TopoSaic home" })).toContainText(
+    "TopoSaic",
+  );
+  await expect(page.getByRole("link", { name: "TopoSaic home" })).toContainText(
+    "Terrain Puzzle",
+  );
   await expect(
     page.getByRole("heading", { name: "Shape your terrain" }),
   ).toBeVisible();

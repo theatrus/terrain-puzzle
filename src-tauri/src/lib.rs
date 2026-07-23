@@ -24,5 +24,5 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Terrain Puzzle");
+        .expect("error while running TopoSaic");
 }

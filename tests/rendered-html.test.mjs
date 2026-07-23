@@ -25,13 +25,15 @@ async function render() {
   );
 }
 
-test("server-renders Terrain Puzzle Studio", async () => {
+test("server-renders TopoSaic", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Terrain Puzzle Studio<\/title>/i);
+  assert.match(html, /<title>TopoSaic — Terrain Puzzle<\/title>/i);
+  assert.match(html, />TopoSaic</);
+  assert.match(html, /<small>Terrain Puzzle<\/small>/);
   assert.match(html, /Shape your terrain/);
   assert.match(html, /role="tablist"/);
   assert.match(html, />Model</);
@@ -64,7 +66,7 @@ test("removes starter-only files and metadata", async () => {
   ]);
 
   assert.match(page, /TerrainStudio/);
-  assert.match(layout, /Terrain Puzzle Studio/);
+  assert.match(layout, /TopoSaic — Terrain Puzzle/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton|drizzle/);
   await assert.rejects(access(new URL("../app/_sites-preview", projectRoot)));
 });

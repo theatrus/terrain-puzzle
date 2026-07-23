@@ -1,6 +1,6 @@
 # Third-party licenses and data
 
-The Apache-2.0 license in `LICENSE` covers the Terrain Puzzle source code and
+The Apache-2.0 license in `LICENSE` covers the TopoSaic source code and
 documentation. It does not relicense third-party software, the bundled font, or
 map data.
 

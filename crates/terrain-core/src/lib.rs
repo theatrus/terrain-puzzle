@@ -2023,7 +2023,7 @@ fn generate_project_inner(
     let project_path = output_dir.join(if spec.solid_model {
         "terrain-solid.3mf"
     } else {
-        "terrain-puzzle.3mf"
+        "toposaic.3mf"
     });
     let mut project_writer = ThreeMfWriter::new(spec, &project_path)?;
     for index in 0..object_count {
@@ -2081,7 +2081,7 @@ fn generate_project_inner(
     artifacts.push(file_artifact(&preview_path, "application/json")?);
 
     let manifest = ProjectManifest {
-        generator: format!("terrain-puzzle/{}", env!("CARGO_PKG_VERSION")),
+        generator: format!("toposaic/{}", env!("CARGO_PKG_VERSION")),
         terrain_source: height_field
             .map(|field| field.source.clone())
             .unwrap_or_else(|| "deterministic-preview-surface".into()),
@@ -2911,7 +2911,7 @@ fn write_binary_stl(mesh: &Mesh, path: &Path) -> Result<()> {
         File::create(path).with_context(|| format!("create STL {}", path.display()))?,
     );
     let mut header = [0_u8; 80];
-    let label = format!("Terrain Puzzle — {}", mesh.name);
+    let label = format!("TopoSaic — {}", mesh.name);
     let bytes = label.as_bytes();
     header[..bytes.len().min(80)].copy_from_slice(&bytes[..bytes.len().min(80)]);
     writer.write_all(&header)?;
@@ -2985,8 +2985,8 @@ impl<'a> ThreeMfWriter<'a> {
             zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="m">
-  <metadata name="Title">Terrain Puzzle</metadata>
-  <metadata name="Designer">Terrain Puzzle Generator</metadata>
+  <metadata name="Title">TopoSaic</metadata>
+  <metadata name="Designer">TopoSaic Terrain Puzzle Generator</metadata>
   <resources>
 "#
                 .as_bytes(),
@@ -2995,8 +2995,8 @@ impl<'a> ThreeMfWriter<'a> {
             zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
-  <metadata name="Title">Terrain Puzzle</metadata>
-  <metadata name="Designer">Terrain Puzzle Generator</metadata>
+  <metadata name="Title">TopoSaic</metadata>
+  <metadata name="Designer">TopoSaic Terrain Puzzle Generator</metadata>
   <resources>
 "#
                 .as_bytes(),
@@ -3391,7 +3391,7 @@ mod tests {
     #[test]
     fn project_writes_print_artifacts() {
         let output_dir =
-            std::env::temp_dir().join(format!("terrain-puzzle-core-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("toposaic-core-test-{}", std::process::id()));
         if output_dir.exists() {
             std::fs::remove_dir_all(&output_dir).unwrap();
         }
@@ -3404,7 +3404,7 @@ mod tests {
         };
         let manifest = generate_project(&spec, &output_dir).unwrap();
 
-        assert!(output_dir.join("terrain-puzzle.3mf").is_file());
+        assert!(output_dir.join("toposaic.3mf").is_file());
         assert!(output_dir.join("piece-1-1.stl").is_file());
         assert!(output_dir.join("preview.json").is_file());
         assert_eq!(
@@ -3444,7 +3444,7 @@ mod tests {
         let manifest = generate_project(&spec, &output_dir).unwrap();
         assert!(output_dir.join("terrain-solid.stl").is_file());
         assert!(output_dir.join("terrain-solid.3mf").is_file());
-        assert!(!output_dir.join("terrain-puzzle.3mf").exists());
+        assert!(!output_dir.join("toposaic.3mf").exists());
         assert!(!output_dir.join("piece-1-1.stl").exists());
         assert_eq!(
             manifest
@@ -3490,7 +3490,7 @@ mod tests {
     #[test]
     fn color_project_writes_standard_3mf_properties_and_preview() {
         let output_dir =
-            std::env::temp_dir().join(format!("terrain-puzzle-color-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("toposaic-color-test-{}", std::process::id()));
         if output_dir.exists() {
             std::fs::remove_dir_all(&output_dir).unwrap();
         }
@@ -3532,7 +3532,7 @@ mod tests {
 
         generate_project_with_fields(&spec, &height, Some(&surface), &output_dir).unwrap();
 
-        let file = File::open(output_dir.join("terrain-puzzle.3mf")).unwrap();
+        let file = File::open(output_dir.join("toposaic.3mf")).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         let mut model = String::new();
         archive

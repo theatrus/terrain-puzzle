@@ -1,6 +1,8 @@
-# Terrain Puzzle
+# TopoSaic
 
-Terrain Puzzle is a local-first topographic puzzle generator. A Rust service
+*Terrain Puzzle*
+
+TopoSaic is a local-first topographic puzzle generator. A Rust service
 samples worldwide elevation data, builds watertight pieces with round jigsaw
 tabs and sockets, and stores job state in SQLite. The web app lets you choose a
 place and tune the printable model, including the mesh detail and surface
@@ -131,9 +133,9 @@ SQLite and generated jobs live under `data/`, which Git ignores. Set
 
 Downloaded map inputs use the standard per-user cache path:
 
-- macOS: `~/Library/Caches/com.theatrus.terrain-puzzle`
-- Linux: `$XDG_CACHE_HOME/terrain-puzzle` or `~/.cache/terrain-puzzle`
-- Windows: `%LOCALAPPDATA%\theatrus\terrain-puzzle\cache`
+- macOS: `~/Library/Caches/com.theatrus.toposaic`
+- Linux: `$XDG_CACHE_HOME/toposaic` or `~/.cache/toposaic`
+- Windows: `%LOCALAPPDATA%\theatrus\toposaic\cache`
 
 Set `TERRAIN_CACHE_DIR` to override that path. The cache keeps elevation PNG
 tiles, full ESA WorldCover GeoTIFF tiles, and OpenStreetMap route responses.
@@ -186,7 +188,7 @@ credits recorded in their manifest or place those credits near the work. See
 
 ## License
 
-Terrain Puzzle source code and documentation are licensed under the
+TopoSaic source code and documentation are licensed under the
 [Apache License 2.0](LICENSE). Third-party software, the bundled font, and map
 data keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 and [assets/fonts/OFL.txt](assets/fonts/OFL.txt).

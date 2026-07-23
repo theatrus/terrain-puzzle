@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Minimal permissions for the Terrain Puzzle desktop window.",
+  "description": "Minimal permissions for the TopoSaic desktop window.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

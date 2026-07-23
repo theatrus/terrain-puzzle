@@ -1142,13 +1142,13 @@ export function TerrainStudio() {
   return (
     <main className="studio">
       <header className="topbar">
-        <a className="brand" href="#" aria-label="Terrain Puzzle Studio home">
+        <a className="brand" href="#" aria-label="TopoSaic home">
           <span className="brand-mark" aria-hidden="true">
-            T6
+            TS
           </span>
           <span>
-            Terrain Puzzle
-            <small>Rust mesh studio</small>
+            TopoSaic
+            <small>Terrain Puzzle</small>
           </span>
         </a>
         <div className="topbar-actions">

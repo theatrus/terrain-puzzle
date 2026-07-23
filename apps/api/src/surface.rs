@@ -498,7 +498,7 @@ fn fetch_osm_response(
     }
 
     let client = Client::builder()
-        .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .user_agent("toposaic/0.1 (+https://github.com/theatrus/terrain-puzzle)")
         .timeout(Duration::from_secs(45))
         .build()
         .context("build OpenStreetMap client")?;
@@ -830,7 +830,7 @@ fn cached_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<PathBuf>
     }
     let url = format!("{WORLD_COVER_BASE_URL}/{file_name}");
     let response = Client::builder()
-        .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .user_agent("toposaic/0.1 (+https://github.com/theatrus/terrain-puzzle)")
         .timeout(Duration::from_secs(300))
         .build()
         .context("build ESA WorldCover client")?

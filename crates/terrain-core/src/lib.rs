@@ -2098,6 +2098,8 @@ fn build_piece(
     .into_iter()
     .map(|[x, y]| [x - origin_x, y - origin_y])
     .collect::<Vec<_>>();
+    let spacing = piece_width.min(piece_height) / samples as f32;
+    let outline = densify_outline_for_triangulation(&outline, spacing);
     let mut points = outline
         .iter()
         .map(|point| Point2::new(point[0] as f64, point[1] as f64))
@@ -2122,7 +2124,6 @@ fn build_piece(
         .iter()
         .map(|point| point[1])
         .fold(f32::NEG_INFINITY, f32::max);
-    let spacing = piece_width.min(piece_height) / samples as f32;
     let grid_columns = ((maximum_x - minimum_x) / spacing).ceil() as usize;
     let grid_rows = ((maximum_y - minimum_y) / spacing).ceil() as usize;
     for grid_y in 0..grid_rows {
@@ -2342,15 +2343,22 @@ fn add_building_boundary_detail_points(
                 } else {
                     -1.0
                 };
-                for side in [-1.0_f32, 1.0] {
+                let wall_pair = [-1.0_f32, 1.0].map(|side| {
                     let offset = side * inward_sign * wall_band;
-                    let local = [
+                    [
                         center[0] * assembled_width - origin_x + normal[0] * offset,
                         center[1] * assembled_height - origin_y + normal[1] * offset,
-                    ];
-                    if point_in_polygon(local, piece_outline) {
-                        points.push(Point2::new(local[0] as f64, local[1] as f64));
-                    }
+                    ]
+                });
+                if wall_pair
+                    .iter()
+                    .all(|point| point_in_polygon(*point, piece_outline))
+                {
+                    points.extend(
+                        wall_pair
+                            .into_iter()
+                            .map(|point| Point2::new(point[0] as f64, point[1] as f64)),
+                    );
                 }
             }
         }
@@ -2359,6 +2367,57 @@ fn add_building_boundary_detail_points(
 
 fn bounds_overlap(left: [f32; 4], right: [f32; 4]) -> bool {
     left[0] <= right[2] && left[2] >= right[0] && left[1] <= right[3] && left[3] >= right[1]
+}
+
+fn densify_outline_for_triangulation(outline: &[[f32; 2]], maximum_step: f32) -> Vec<[f32; 2]> {
+    if outline.len() < 3 {
+        return outline.to_vec();
+    }
+    let signed_area = outline
+        .iter()
+        .zip(outline.iter().cycle().skip(1))
+        .map(|(start, end)| start[0] * end[1] - end[0] * start[1])
+        .sum::<f32>();
+    let inward_sign = if signed_area >= 0.0 { 1.0 } else { -1.0 };
+    let mut dense = Vec::with_capacity(outline.len());
+    for (start, end) in outline.iter().zip(outline.iter().cycle().skip(1)) {
+        let delta = [end[0] - start[0], end[1] - start[1]];
+        let length = delta[0].hypot(delta[1]);
+        let segments = (length / maximum_step.max(0.01)).ceil().max(1.0) as usize;
+        let inward = if length <= f32::EPSILON {
+            [0.0, 0.0]
+        } else {
+            [
+                -delta[1] / length * inward_sign,
+                delta[0] / length * inward_sign,
+            ]
+        };
+        for index in 0..segments {
+            let t = index as f32 / segments as f32;
+            let offset = if index % 2 == 1 { 0.001 } else { 0.0 };
+            dense.push([
+                start[0] + delta[0] * t + inward[0] * offset,
+                start[1] + delta[1] * t + inward[1] * offset,
+            ]);
+        }
+    }
+    let unshifted = dense.clone();
+    let point_count = dense.len();
+    for index in (1..point_count).step_by(2) {
+        let previous = unshifted[(index + point_count - 1) % point_count];
+        let point = unshifted[index];
+        let next = unshifted[(index + 1) % point_count];
+        if point_line_distance(point, previous, next) > 0.000_01 {
+            continue;
+        }
+        let tangent = [next[0] - previous[0], next[1] - previous[1]];
+        let length = tangent[0].hypot(tangent[1]);
+        if length > f32::EPSILON {
+            dense[index][0] += -tangent[1] / length * inward_sign * 0.001;
+            dense[index][1] += tangent[0] / length * inward_sign * 0.001;
+        }
+    }
+    dense
 }
 
 fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Vec<[f32; 2]> {
@@ -3606,6 +3665,57 @@ mod tests {
         edge_y.dedup_by(|a, b| (*a - *b).abs() < 0.001);
         assert!(edge_y.len() >= 90);
         assert!(edge_y.windows(2).all(|pair| pair[1] - pair[0] <= 0.21));
+    }
+
+    #[test]
+    fn building_detail_at_piece_edges_does_not_create_long_height_jump_edges() {
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "buildings").unwrap();
+        field.paint_building(&[[0.5, 0.1], [0.7, 0.1], [0.7, 0.9], [0.5, 0.9]], 24.0);
+        let flat_height = HeightField {
+            width: 2,
+            height: 2,
+            values_m: vec![0.0; 4],
+            source: "flat".into(),
+        };
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            ground_span_km: 1.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 32,
+            overlay_samples_per_piece: 32,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 2.0,
+            },
+            ..GenerationSpec::default()
+        };
+
+        for row in 0..spec.rows {
+            let mesh = build_piece(&spec, Some(&flat_height), Some(&field), row, 0).unwrap();
+            let longest_height_jump = mesh
+                .triangles
+                .iter()
+                .flat_map(|triangle| {
+                    [
+                        [triangle[0], triangle[1]],
+                        [triangle[1], triangle[2]],
+                        [triangle[2], triangle[0]],
+                    ]
+                })
+                .filter_map(|edge| {
+                    let start = mesh.vertices[edge[0] as usize];
+                    let end = mesh.vertices[edge[1] as usize];
+                    ((start[2] - end[2]).abs() > 1.0)
+                        .then_some((start[0] - end[0]).hypot(start[1] - end[1]))
+                })
+                .fold(0.0_f32, f32::max);
+            assert!(
+                longest_height_jump <= 2.0,
+                "building wall crossed {longest_height_jump:.3} mm in piece {row}-0"
+            );
+            assert_watertight(&mesh);
+        }
     }
 
     #[test]

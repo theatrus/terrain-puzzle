@@ -2,11 +2,12 @@
 
 ## Goal
 
-Generate a three-color mountain puzzle whose printable surface marks:
+Generate a four-color mountain puzzle whose printable surface marks:
 
 - forest in dark green;
 - exposed rock and other ground in warm gray;
 - snow and ice in off-white.
+- permanent water in blue.
 
 The first reference case is the existing Mount Rainier example. The single-color
 STL files must remain available. The 3MF file becomes the main color output.
@@ -21,11 +22,13 @@ rock. The first version should use ESA WorldCover 2021 at 10 m resolution:
 - class 10, tree cover: forest;
 - class 60, bare or sparse vegetation: rock;
 - class 70, snow and ice: snow;
-- all other classes: rock in the three-color mode.
+- class 80, permanent water bodies: water;
+- all other classes: rock in the four-color mode.
 
-Classification priority is snow, then forest, then rock. The map is static, so
-snow means mapped snow or ice rather than current seasonal snow. A later version
-can add dated Sentinel-2 imagery for seasonal snow.
+The map is static, so snow means mapped snow or ice rather than current seasonal
+snow. Water includes lakes, reservoirs, and rivers that are wide enough to
+appear in the 10 m data. A later version can add dated Sentinel-2 imagery for
+seasonal snow and vector data for narrower streams.
 
 Sources:
 
@@ -34,9 +37,9 @@ Sources:
 
 ### Paint only the visible terrain surface
 
-The top surface gets forest, rock, or snow. Side walls and the underside use the
-rock filament. This keeps the pieces strong and cuts filament changes compared
-with making each color a solid volume.
+The top surface gets forest, rock, snow, or water. Side walls and the underside
+use the rock filament. This keeps the pieces strong and cuts filament changes
+compared with making each color a solid volume.
 
 The default palette is:
 
@@ -45,6 +48,7 @@ The default palette is:
 | Forest | `#28543A` | dark green matte PLA |
 | Rock | `#7C7468` | stone or warm gray matte PLA |
 | Snow | `#F4F3EC` | natural white matte PLA |
+| Water | `#2F76B5` | medium blue matte PLA |
 
 The colors are labels, not fixed filament brands. Bambu Studio should let the
 user map each label to an AMS slot.
@@ -67,7 +71,7 @@ that smaller patches add filament changes and may vanish in the sliced output.
 Add these core types:
 
 ```text
-SurfaceClass = Forest | Rock | Snow
+SurfaceClass = Forest | Rock | Snow | Water
 SurfacePalette = colors and filament labels
 SurfaceField = classified raster plus source details
 ColorOutputSpec = enabled, palette, minimum patch size, side color
@@ -83,7 +87,7 @@ triangles always receive the chosen side color.
 ## 3MF output
 
 Use the standard 3MF Materials and Properties Extension. Add one color group
-with the three palette entries, then attach a flat property to each triangle
+with the four palette entries, then attach a flat property to each triangle
 with `pid` and equal `p1`, `p2`, and `p3` values. Keep geometry and color data
 separate in the Rust mesh model.
 
@@ -98,11 +102,11 @@ Reference:
 
 Add a **Color terrain** section below the relief controls:
 
-- Off / Rock–forest–snow mode;
-- three editable color swatches and filament names;
+- Off / Rock–forest–snow–water mode;
+- four editable color swatches and filament names;
 - minimum color patch size;
 - side and underside color;
-- a note that snow is mapped snow and ice, not live weather.
+- a note that snow is not live and narrow streams may fall below 10 m.
 
 The terrain preview should use the same class raster as the export. Add a small
 legend and coverage figures, such as `Forest 51% · Rock 31% · Snow 18%`.
@@ -138,7 +142,7 @@ offer a rock-only export rather than silently inventing classes.
 ### 5. Print validation
 
 - Open the Mount Rainier 3MF in the current Bambu Studio release.
-- Confirm three named colors can map to three filaments.
+- Confirm four named colors can map to four filaments.
 - Confirm all nine pieces stay manifold and retain their snug seams.
 - Slice a representative center piece and inspect its top layers.
 - Print a small test piece before treating the palette and 1.2 mm patch size as
@@ -147,10 +151,11 @@ offer a rock-only export rather than silently inventing classes.
 ## Acceptance checks
 
 - Mount Rainier shows connected green forest low on the mountain, gray exposed
-  ground above the tree line, and white snow or ice near the summit and glaciers.
+  ground above the tree line, white snow or ice near the summit and glaciers,
+  and blue where permanent water is mapped.
 - Color boundaries continue across puzzle seams.
 - The web preview and 3MF triangle classes match.
-- The 3MF opens with three usable colors and no mesh repair.
+- The 3MF opens with four usable colors and no mesh repair.
 - Each piece remains one closed solid.
 - Single-color STL output remains unchanged.
 - A missing land-cover tile never produces false color without a warning.

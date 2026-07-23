@@ -27,6 +27,7 @@ type GenerationSpec = {
     forest_color: string;
     rock_color: string;
     snow_color: string;
+    water_color: string;
     minimum_patch_mm: number;
   };
 };
@@ -56,11 +57,13 @@ type PreviewData = {
     rock: string;
     forest: string;
     snow: string;
+    water: string;
   };
   surface_coverage?: {
     rock: number;
     forest: number;
     snow: number;
+    water: number;
   };
   surface_source?: string;
 };
@@ -92,6 +95,7 @@ const initialSpec: GenerationSpec = {
     forest_color: "#28543A",
     rock_color: "#7C7468",
     snow_color: "#F4F3EC",
+    water_color: "#2F76B5",
     minimum_patch_mm: 1.2,
   },
 };
@@ -627,7 +631,9 @@ function ReliefPreview({
             ? palette?.forest
             : surfaceClass === 2
               ? palette?.snow
-              : palette?.rock;
+              : surfaceClass === 3
+                ? palette?.water
+                : palette?.rock;
         context.beginPath();
         context.moveTo(a.x, a.y);
         context.lineTo(b.x, b.y);
@@ -712,6 +718,7 @@ function ReliefPreview({
               ["Forest", "forest", spec.color_output.forest_color],
               ["Rock", "rock", spec.color_output.rock_color],
               ["Snow", "snow", spec.color_output.snow_color],
+              ["Water", "water", spec.color_output.water_color],
             ] as const
           ).map(([label, key, color]) => (
             <span key={key}>
@@ -915,7 +922,7 @@ export function TerrainStudio() {
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.progress < 40) return "Sampling global elevation…";
     if (job.progress < 65 && spec.color_output.enabled) {
-      return "Mapping forest, rock, and snow…";
+      return "Mapping forest, rock, snow, and water…";
     }
     return "Building watertight pieces…";
   }, [job, spec.color_output.enabled]);
@@ -1118,6 +1125,7 @@ export function TerrainStudio() {
                       ["Forest", "forest_color"],
                       ["Rock", "rock_color"],
                       ["Snow", "snow_color"],
+                      ["Water", "water_color"],
                     ] as const
                   ).map(([label, key]) => (
                     <label key={key}>
@@ -1141,8 +1149,9 @@ export function TerrainStudio() {
                   onChange={(value) => updateColor("minimum_patch_mm", value)}
                 />
                 <p className="color-note">
-                  Snow shows mapped permanent snow and ice, not today&apos;s
-                  snow line. Sides and bottoms use the rock color.
+                  Water shows mapped permanent lakes, reservoirs, and rivers.
+                  Narrow streams below 10 m may not appear. Snow is not live.
+                  Sides and bottoms use the rock color.
                 </p>
               </>
             )}

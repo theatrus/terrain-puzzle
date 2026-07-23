@@ -13,9 +13,9 @@ The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry and keeps a local tile cache under `data/dem-cache`.
 
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
-maps tree cover, bare ground, and snow or ice to editable forest, rock, and snow
-colors. The 3MF stores standard triangle color properties. STL files stay
-single-color.
+maps tree cover, bare ground, snow or ice, and permanent water to editable
+forest, rock, snow, and water colors. The 3MF stores standard triangle color
+properties. STL files stay single-color.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests
@@ -71,7 +71,7 @@ npm test
 - `app`: WebGL-free map, color relief preview, print controls, and job downloads
 
 See [the color output plan](docs/color-output-plan.md) for the design and print
-checks behind the rock–forest–snow 3MF workflow.
+checks behind the rock–forest–snow–water 3MF workflow.
 
 ## Terrain data
 

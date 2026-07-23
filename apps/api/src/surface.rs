@@ -191,6 +191,7 @@ fn classify_world_cover(value: u8) -> SurfaceClass {
     match value {
         10 => SurfaceClass::Forest,
         70 => SurfaceClass::Snow,
+        80 => SurfaceClass::Water,
         _ => SurfaceClass::Rock,
     }
 }
@@ -226,6 +227,7 @@ mod tests {
     fn maps_world_cover_classes_to_print_colors() {
         assert_eq!(classify_world_cover(10), SurfaceClass::Forest);
         assert_eq!(classify_world_cover(70), SurfaceClass::Snow);
+        assert_eq!(classify_world_cover(80), SurfaceClass::Water);
         assert_eq!(classify_world_cover(60), SurfaceClass::Rock);
         assert_eq!(classify_world_cover(30), SurfaceClass::Rock);
     }

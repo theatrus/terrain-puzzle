@@ -90,6 +90,7 @@ pub struct ColorOutputSpec {
     pub forest_color: String,
     pub rock_color: String,
     pub snow_color: String,
+    pub water_color: String,
     pub minimum_patch_mm: f32,
 }
 
@@ -100,6 +101,7 @@ impl Default for ColorOutputSpec {
             forest_color: "#28543A".into(),
             rock_color: "#7C7468".into(),
             snow_color: "#F4F3EC".into(),
+            water_color: "#2F76B5".into(),
             minimum_patch_mm: 1.2,
         }
     }
@@ -111,6 +113,7 @@ impl ColorOutputSpec {
             ("forest", &self.forest_color),
             ("rock", &self.rock_color),
             ("snow", &self.snow_color),
+            ("water", &self.water_color),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -135,6 +138,7 @@ pub enum SurfaceClass {
     Rock,
     Forest,
     Snow,
+    Water,
 }
 
 impl SurfaceClass {
@@ -143,6 +147,7 @@ impl SurfaceClass {
             Self::Rock => 0,
             Self::Forest => 1,
             Self::Snow => 2,
+            Self::Water => 3,
         }
     }
 }
@@ -221,7 +226,7 @@ impl SurfaceField {
             let class = original[start];
             let mut queue = VecDeque::from([start]);
             let mut component = Vec::new();
-            let mut neighbours = [0_usize; 3];
+            let mut neighbours = [0_usize; 4];
             visited[start] = true;
             while let Some(index) = queue.pop_front() {
                 component.push(index);
@@ -255,6 +260,7 @@ impl SurfaceField {
                     .map(|(index, _)| match index {
                         1 => SurfaceClass::Forest,
                         2 => SurfaceClass::Snow,
+                        3 => SurfaceClass::Water,
                         _ => SurfaceClass::Rock,
                     })
                     .unwrap_or(SurfaceClass::Rock);
@@ -271,8 +277,8 @@ impl SurfaceField {
         self.classes[y * self.width + x]
     }
 
-    fn coverage(&self) -> [f32; 3] {
-        let mut counts = [0_usize; 3];
+    fn coverage(&self) -> [f32; 4] {
+        let mut counts = [0_usize; 4];
         for class in &self.classes {
             counts[class.material_index() as usize] += 1;
         }
@@ -959,11 +965,13 @@ fn build_preview(
             "rock": spec.color_output.rock_color,
             "forest": spec.color_output.forest_color,
             "snow": spec.color_output.snow_color,
+            "water": spec.color_output.water_color,
         });
         preview["surface_coverage"] = serde_json::json!({
             "rock": coverage[0],
             "forest": coverage[1],
             "snow": coverage[2],
+            "water": coverage[3],
         });
         preview["surface_source"] = serde_json::json!(field.source);
     }
@@ -1054,10 +1062,11 @@ fn write_3mf(spec: &GenerationSpec, meshes: &[Mesh], path: &Path) -> Result<()> 
     const COLOR_GROUP_ID: u32 = 1000;
     if spec.color_output.enabled {
         model.push_str(&format!(
-            "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>\n",
+            "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>\n",
             spec.color_output.rock_color,
             spec.color_output.forest_color,
             spec.color_output.snow_color,
+            spec.color_output.water_color,
         ));
     }
 
@@ -1259,9 +1268,10 @@ mod tests {
             5,
             5,
             (0..25)
-                .map(|index| match index % 3 {
+                .map(|index| match index % 4 {
                     1 => SurfaceClass::Forest,
                     2 => SurfaceClass::Snow,
+                    3 => SurfaceClass::Water,
                     _ => SurfaceClass::Rock,
                 })
                 .collect(),
@@ -1286,15 +1296,18 @@ mod tests {
         );
         assert!(model.contains("<m:colorgroup id=\"1000\">"));
         assert!(model.contains("color=\"#28543AFF\""));
+        assert!(model.contains("color=\"#2F76B5FF\""));
         assert!(model.contains("pid=\"1000\""));
         assert!(model.contains("p1=\"1\""));
         assert!(model.contains("p1=\"2\""));
+        assert!(model.contains("p1=\"3\""));
 
         let preview: serde_json::Value =
             serde_json::from_slice(&std::fs::read(output_dir.join("preview.json")).unwrap())
                 .unwrap();
         assert!(preview["surface_classes"].is_array());
         assert_eq!(preview["surface_palette"]["rock"], "#7C7468");
+        assert_eq!(preview["surface_palette"]["water"], "#2F76B5");
         assert_eq!(preview["surface_source"], "test surface");
 
         std::fs::remove_dir_all(output_dir).unwrap();
@@ -1307,6 +1320,21 @@ mod tests {
         let mut field = SurfaceField::new(5, 5, classes, "test").unwrap();
         field.filter_small_patches(10.0, 4.0);
         assert_eq!(field.classes[12], SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn old_color_specs_gain_the_default_water_color() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": {
+                "enabled": true,
+                "forest_color": "#28543A",
+                "rock_color": "#7C7468",
+                "snow_color": "#F4F3EC",
+                "minimum_patch_mm": 1.2
+            }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.water_color, "#2F76B5");
     }
 
     #[test]

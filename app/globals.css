@@ -639,7 +639,7 @@ a {
 .color-swatches {
   display: grid;
   gap: 7px;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   margin-top: 15px;
 }
 

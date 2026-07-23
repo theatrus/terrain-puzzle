@@ -21,6 +21,24 @@ pub fn fetch_height_field(spec: &GenerationSpec, cache_dir: &Path) -> Result<Hei
     let samples = spec.effective_samples_per_piece();
     let sample_width = (spec.columns * samples + 1) as usize;
     let sample_height = (spec.rows * samples + 1) as usize;
+    fetch_height_field_at_size(spec, cache_dir, sample_width, sample_height)
+}
+
+pub fn fetch_preview_height_field(
+    spec: &GenerationSpec,
+    cache_dir: &Path,
+    size: usize,
+) -> Result<HeightField> {
+    let size = size.clamp(32, 128);
+    fetch_height_field_at_size(spec, cache_dir, size, size)
+}
+
+fn fetch_height_field_at_size(
+    spec: &GenerationSpec,
+    cache_dir: &Path,
+    sample_width: usize,
+    sample_height: usize,
+) -> Result<HeightField> {
     let zoom = choose_zoom(spec, sample_width.max(sample_height));
     let client = Client::builder()
         .user_agent("terrain-puzzle/0.1 (+local terrain mesh generator)")

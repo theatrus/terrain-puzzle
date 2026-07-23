@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/playwright-report/
+/test-results/
 
 # next.js
 /.next/
@@ -38,12 +40,14 @@ yarn-error.log*
 # typescript
 next-env.d.ts
 /dist/
+/dist-desktop/
 /.wrangler/
 /outputs/
 /work/
 
 # Rust
 /target/
+/src-tauri/gen/
 
 # Local Terrain Puzzle state and generated files
 /data/

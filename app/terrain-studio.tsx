@@ -109,7 +109,11 @@ type PlaceResult = {
 };
 
 const API_URL =
-  process.env.NEXT_PUBLIC_TERRAIN_API_URL ?? "http://127.0.0.1:8787";
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+    ? "http://127.0.0.1:38787"
+    : ((typeof process !== "undefined"
+        ? process.env.NEXT_PUBLIC_TERRAIN_API_URL
+        : undefined) ?? "http://127.0.0.1:8787");
 
 const initialSpec: GenerationSpec = {
   center_lat: 46.8523,
@@ -599,9 +603,11 @@ function shadeColor(color: string, factor: number) {
 function ReliefPreview({
   spec,
   preview,
+  previewState,
 }: {
   spec: GenerationSpec;
   preview: PreviewData | null;
+  previewState: "shape" | "loading" | "elevation" | "generated";
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -809,7 +815,14 @@ function ReliefPreview({
       )}
       <div className="preview-label">
         <span>
-          {preview ? "Generated terrain" : "Fast shape preview"} ·{" "}
+          {previewState === "generated"
+            ? "Generated terrain"
+            : previewState === "elevation"
+              ? "Live elevation preview"
+              : previewState === "loading"
+                ? "Loading local elevation"
+                : "Fast shape preview"}{" "}
+          ·{" "}
           {spec.solid_model
             ? `${Math.max(
                 96,
@@ -880,8 +893,15 @@ function RangeField({
 
 export function TerrainStudio() {
   const [spec, setSpec] = useState(initialSpec);
+  const [activeSection, setActiveSection] = useState<
+    "model" | "surface" | "buildings" | "tray" | "output"
+  >("model");
   const [job, setJob] = useState<Job | null>(null);
-  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [generatedPreview, setGeneratedPreview] =
+    useState<PreviewData | null>(null);
+  const [elevationPreview, setElevationPreview] =
+    useState<PreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [placeQuery, setPlaceQuery] = useState("");
@@ -891,7 +911,7 @@ export function TerrainStudio() {
 
   const update = useCallback(
     <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) => {
-      setPreview(null);
+      setGeneratedPreview(null);
       setSpec((current) => ({ ...current, [key]: value }));
     },
     [],
@@ -901,7 +921,7 @@ export function TerrainStudio() {
       key: Key,
       value: GenerationSpec["color_output"][Key],
     ) => {
-      setPreview(null);
+      setGeneratedPreview(null);
       setSpec((current) => ({
         ...current,
         color_output: { ...current.color_output, [key]: value },
@@ -914,7 +934,7 @@ export function TerrainStudio() {
       key: Key,
       value: GenerationSpec["tray"][Key],
     ) => {
-      setPreview(null);
+      setGeneratedPreview(null);
       setSpec((current) => ({
         ...current,
         tray: { ...current.tray, [key]: value },
@@ -927,7 +947,7 @@ export function TerrainStudio() {
       key: Key,
       value: GenerationSpec["buildings"][Key],
     ) => {
-      setPreview(null);
+      setGeneratedPreview(null);
       setSpec((current) => ({
         ...current,
         buildings: { ...current.buildings, [key]: value },
@@ -937,13 +957,55 @@ export function TerrainStudio() {
   );
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
-    setPreview(null);
+    setGeneratedPreview(null);
     setSpec((current) => ({
       ...current,
       center_lat: Number(latitude.toFixed(5)),
       center_lon: Number(longitude.toFixed(5)),
     }));
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setElevationPreview(null);
+      setPreviewLoading(true);
+      const previewSpec: GenerationSpec = {
+        ...initialSpec,
+        center_lat: spec.center_lat,
+        center_lon: spec.center_lon,
+        ground_span_km: spec.ground_span_km,
+        color_output: {
+          ...initialSpec.color_output,
+          enabled: false,
+          roads_enabled: false,
+          osm_water_enabled: false,
+        },
+        buildings: { ...initialSpec.buildings, enabled: false },
+        tray: { ...initialSpec.tray, enabled: false },
+      };
+      try {
+        const response = await fetch(`${API_URL}/api/preview`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(previewSpec),
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        setElevationPreview((await response.json()) as PreviewData);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setElevationPreview(null);
+        }
+      } finally {
+        if (!controller.signal.aborted) setPreviewLoading(false);
+      }
+    }, 450);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [spec.center_lat, spec.center_lon, spec.ground_span_km]);
 
   const searchPlaces = async () => {
     const query = placeQuery.trim();
@@ -983,7 +1045,7 @@ export function TerrainStudio() {
     update("place_name", place.display_name.split(",")[0].trim().slice(0, 48));
     setPlaceResults([]);
     setPlaceMessage(`Map moved to ${place.display_name.split(",")[0]}.`);
-    setPreview(null);
+    setGeneratedPreview(null);
   };
 
   useEffect(() => {
@@ -999,7 +1061,7 @@ export function TerrainStudio() {
             `${API_URL}/api/jobs/${nextJob.id}/downloads/preview.json`,
           );
           if (previewResponse.ok) {
-            setPreview((await previewResponse.json()) as PreviewData);
+            setGeneratedPreview((await previewResponse.json()) as PreviewData);
           }
         }
       } catch {
@@ -1014,7 +1076,7 @@ export function TerrainStudio() {
     setSubmitting(true);
     setMessage(null);
     setJob(null);
-    setPreview(null);
+    setGeneratedPreview(null);
     try {
       const response = await fetch(`${API_URL}/api/jobs`, {
         method: "POST",
@@ -1026,7 +1088,9 @@ export function TerrainStudio() {
         throw new Error(payload.error ?? "Generation could not start");
       }
       setJob(payload as Job);
+      setActiveSection("output");
     } catch (error) {
+      setActiveSection("output");
       setMessage(
         error instanceof TypeError
           ? "Start the local Rust generator, then try again."
@@ -1066,6 +1130,15 @@ export function TerrainStudio() {
       : "Building watertight pieces…";
   }, [job]);
 
+  const preview = generatedPreview ?? elevationPreview;
+  const previewState = generatedPreview
+    ? "generated"
+    : elevationPreview
+      ? "elevation"
+      : previewLoading
+        ? "loading"
+        : "shape";
+
   return (
     <main className="studio">
       <header className="topbar">
@@ -1078,194 +1151,236 @@ export function TerrainStudio() {
             <small>Rust mesh studio</small>
           </span>
         </a>
-        <div className="build-state">
-          <span />
-          Local engine · SQLite
+        <div className="topbar-actions">
+          <div className="build-state">
+            <span />
+            {job ? statusLabel : "Local engine · SQLite"}
+          </div>
+          <button
+            className="topbar-generate"
+            type="submit"
+            form="terrain-controls"
+            disabled={submitting}
+          >
+            {submitting ? "Starting…" : "Generate"}
+            <span aria-hidden="true">↗</span>
+          </button>
         </div>
       </header>
-
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Make a place you can hold</p>
-          <h1>Turn any landscape into a puzzle.</h1>
-        </div>
-        <p className="hero-copy">
-          Pick a place, tune the relief, then print it as one solid terrain
-          model or a full jigsaw.
-        </p>
-      </section>
 
       <div className="workspace">
         <section className="visual-column" aria-label="Place and model preview">
           <TerrainMap spec={spec} onCenterChange={onCenterChange} />
-          <ReliefPreview spec={spec} preview={preview} />
+          <ReliefPreview
+            spec={spec}
+            preview={preview}
+            previewState={previewState}
+          />
         </section>
 
-        <form className="controls" onSubmit={submit}>
+        <form className="controls" id="terrain-controls" onSubmit={submit}>
           <div className="panel-heading">
-            <span>01</span>
             <div>
-              <h2>Shape your terrain</h2>
-              <p>All sizes use millimetres.</p>
+              <h1>Shape your terrain</h1>
+              <p>Choose a section. Generate stays within reach.</p>
             </div>
           </div>
 
-          <div className="place-search">
-            <label htmlFor="place-search-input">Find a place</label>
-            <div className="place-search-row">
-              <input
-                id="place-search-input"
-                type="search"
-                value={placeQuery}
-                placeholder="Mountain, park, city…"
-                onChange={(event) => setPlaceQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void searchPlaces();
-                  }
-                }}
-              />
+          <div
+            className="control-tabs"
+            role="tablist"
+            aria-label="Terrain settings"
+          >
+            {(
+              [
+                ["model", "Model"],
+                ["surface", "Surface"],
+                ["buildings", "Buildings"],
+                ["tray", "Tray"],
+                ["output", "Output"],
+              ] as const
+            ).map(([key, label]) => (
               <button
+                key={key}
                 type="button"
-                disabled={searchingPlaces}
-                onClick={() => void searchPlaces()}
+                role="tab"
+                aria-selected={activeSection === key}
+                className={activeSection === key ? "active" : ""}
+                onClick={() => setActiveSection(key)}
               >
-                {searchingPlaces ? "Searching…" : "Search"}
+                {label}
+                {key === "output" && job && (
+                  <span className={`tab-status ${job.status}`} />
+                )}
               </button>
-            </div>
-            {placeMessage && (
-              <p className="place-search-message" role="status">
-                {placeMessage}
+            ))}
+          </div>
+
+          <section
+            className="control-section model-controls"
+            hidden={activeSection !== "model"}
+          >
+            <div className="place-search">
+              <label htmlFor="place-search-input">Find a place</label>
+              <div className="place-search-row">
+                <input
+                  id="place-search-input"
+                  type="search"
+                  value={placeQuery}
+                  placeholder="Mountain, park, city…"
+                  onChange={(event) => setPlaceQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void searchPlaces();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={searchingPlaces}
+                  onClick={() => void searchPlaces()}
+                >
+                  {searchingPlaces ? "Searching…" : "Search"}
+                </button>
+              </div>
+              {placeMessage && (
+                <p className="place-search-message" role="status">
+                  {placeMessage}
+                </p>
+              )}
+              {placeResults.length > 0 && (
+                <ul className="place-results" aria-label="Place search results">
+                  {placeResults.map((place) => (
+                    <li
+                      key={`${place.latitude}-${place.longitude}-${place.display_name}`}
+                    >
+                      <button type="button" onClick={() => choosePlace(place)}>
+                        <span>{place.display_name}</span>
+                        <small>
+                          {place.category} · {place.kind.replaceAll("_", " ")}
+                        </small>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="place-search-note">
+                Submit-only search sends public place names to{" "}
+                <a
+                  href="https://www.openstreetmap.org/copyright"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  OpenStreetMap
+                </a>
+                . Do not enter private information.
               </p>
-            )}
-            {placeResults.length > 0 && (
-              <ul className="place-results" aria-label="Place search results">
-                {placeResults.map((place) => (
-                  <li
-                    key={`${place.latitude}-${place.longitude}-${place.display_name}`}
-                  >
-                    <button type="button" onClick={() => choosePlace(place)}>
-                      <span>{place.display_name}</span>
-                      <small>
-                        {place.category} · {place.kind.replaceAll("_", " ")}
-                      </small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <p className="place-search-note">
-              Submit-only search sends public place names to{" "}
-              <a
-                href="https://www.openstreetmap.org/copyright"
-                target="_blank"
-                rel="noreferrer"
-              >
-                OpenStreetMap
-              </a>
-              . Do not enter private information.
-            </p>
-          </div>
+            </div>
 
-          <div className="coordinate-row">
-            <label>
-              Latitude
+            <div className="coordinate-row">
+              <label>
+                Latitude
+                <input
+                  type="number"
+                  step="0.00001"
+                  value={spec.center_lat}
+                  onChange={(event) =>
+                    update("center_lat", Number(event.target.value))
+                  }
+                />
+              </label>
+              <label>
+                Longitude
+                <input
+                  type="number"
+                  step="0.00001"
+                  value={spec.center_lon}
+                  onChange={(event) =>
+                    update("center_lon", Number(event.target.value))
+                  }
+                />
+              </label>
+            </div>
+            <label className="place-label-field">
+              Tray place label
               <input
-                type="number"
-                step="0.00001"
-                value={spec.center_lat}
-                onChange={(event) =>
-                  update("center_lat", Number(event.target.value))
-                }
+                type="text"
+                maxLength={48}
+                required
+                value={spec.place_name}
+                onChange={(event) => update("place_name", event.target.value)}
               />
+              <small>The tray adds the coordinates after this name.</small>
             </label>
-            <label>
-              Longitude
-              <input
-                type="number"
-                step="0.00001"
-                value={spec.center_lon}
-                onChange={(event) =>
-                  update("center_lon", Number(event.target.value))
-                }
-              />
-            </label>
-          </div>
-          <label className="place-label-field">
-            Tray place label
-            <input
-              type="text"
-              maxLength={48}
-              required
-              value={spec.place_name}
-              onChange={(event) => update("place_name", event.target.value)}
-            />
-            <small>The tray adds the coordinates after this name.</small>
-          </label>
 
-          <RangeField
-            label="Ground span"
-            value={spec.ground_span_km}
-            unit=" km"
-            min={1}
-            max={80}
-            step={1}
-            onChange={(value) => update("ground_span_km", value)}
-          />
-          <RangeField
-            label="Print width"
-            value={spec.width_mm}
-            unit=" mm"
-            min={80}
-            max={300}
-            step={5}
-            onChange={(value) => update("width_mm", value)}
-          />
-          <RangeField
-            label="Terrain relief"
-            value={spec.relief_mm}
-            unit=" mm"
-            min={3}
-            max={35}
-            step={1}
-            onChange={(value) => update("relief_mm", value)}
-          />
-          <RangeField
-            label="Mesh detail"
-            value={spec.samples_per_piece}
-            unit={spec.solid_model ? "" : " samples/piece"}
-            min={32}
-            max={128}
-            step={8}
-            onChange={(value) => update("samples_per_piece", value)}
-          />
-          {(spec.color_output.enabled || spec.buildings.enabled) && (
             <RangeField
-              label="Overlay detail"
-              value={spec.overlay_samples_per_piece}
-              unit=" samples/piece"
-              min={64}
-              max={192}
-              step={8}
-              onChange={(value) =>
-                update("overlay_samples_per_piece", value)
-              }
+              label="Ground span"
+              value={spec.ground_span_km}
+              unit=" km"
+              min={1}
+              max={80}
+              step={1}
+              onChange={(value) => update("ground_span_km", value)}
             />
-          )}
-          {!spec.solid_model && (
             <RangeField
-              label="Fit clearance"
-              value={spec.clearance_mm}
+              label="Print width"
+              value={spec.width_mm}
               unit=" mm"
-              min={0}
-              max={0.4}
-              step={0.02}
-              onChange={(value) => update("clearance_mm", value)}
+              min={80}
+              max={300}
+              step={5}
+              onChange={(value) => update("width_mm", value)}
             />
-          )}
+            <RangeField
+              label="Terrain relief"
+              value={spec.relief_mm}
+              unit=" mm"
+              min={3}
+              max={35}
+              step={1}
+              onChange={(value) => update("relief_mm", value)}
+            />
+            <RangeField
+              label="Mesh detail"
+              value={spec.samples_per_piece}
+              unit={spec.solid_model ? "" : " samples/piece"}
+              min={32}
+              max={128}
+              step={8}
+              onChange={(value) => update("samples_per_piece", value)}
+            />
+            {(spec.color_output.enabled || spec.buildings.enabled) && (
+              <RangeField
+                label="Overlay detail"
+                value={spec.overlay_samples_per_piece}
+                unit=" samples/piece"
+                min={64}
+                max={192}
+                step={8}
+                onChange={(value) =>
+                  update("overlay_samples_per_piece", value)
+                }
+              />
+            )}
+            {!spec.solid_model && (
+              <RangeField
+                label="Fit clearance"
+                value={spec.clearance_mm}
+                unit=" mm"
+                min={0}
+                max={0.4}
+                step={0.02}
+                onChange={(value) => update("clearance_mm", value)}
+              />
+            )}
+          </section>
 
-          <fieldset className="color-controls" aria-label="Surface colors">
+          <fieldset
+            className="color-controls control-section surface-controls"
+            aria-label="Surface colors"
+            hidden={activeSection !== "surface"}
+          >
             <div className="color-heading">
               <div>
                 <strong className="color-title">Surface colors</strong>
@@ -1417,8 +1532,9 @@ export function TerrainStudio() {
           </fieldset>
 
           <fieldset
-            className="color-controls building-controls"
+            className="color-controls building-controls control-section"
             aria-label="Mapped buildings"
+            hidden={activeSection !== "buildings"}
           >
             <div className="color-heading">
               <div>
@@ -1456,7 +1572,7 @@ export function TerrainStudio() {
             )}
           </fieldset>
 
-          <fieldset className="model-mode">
+          <fieldset className="model-mode" hidden={activeSection !== "model"}>
             <legend>Model type</legend>
             <button
               type="button"
@@ -1488,90 +1604,98 @@ export function TerrainStudio() {
           </fieldset>
 
           {!spec.solid_model && (
-            <fieldset className="piece-grid">
+            <fieldset className="piece-grid" hidden={activeSection !== "model"}>
               <legend>Piece layout</legend>
-            {[4, 6, 8, 10, 12].map((count) => (
-              <button
-                type="button"
-                className={
-                  spec.rows === count && spec.columns === count ? "active" : ""
-                }
-                key={count}
-                onClick={() => {
-                  setPreview(null);
-                  setSpec((current) => ({
-                    ...current,
-                    rows: count,
-                    columns: count,
-                  }));
-                }}
-              >
-                <span
-                  className="mini-grid"
-                  style={{
-                    gridTemplateColumns: `repeat(${count}, 1fr)`,
+              {[4, 6, 8, 10, 12].map((count) => (
+                <button
+                  type="button"
+                  className={
+                    spec.rows === count && spec.columns === count
+                      ? "active"
+                      : ""
+                  }
+                  key={count}
+                  onClick={() => {
+                    setGeneratedPreview(null);
+                    setSpec((current) => ({
+                      ...current,
+                      rows: count,
+                      columns: count,
+                    }));
                   }}
                 >
-                  {Array.from({ length: count * count }).map((_, index) => (
-                    <i key={index} />
-                  ))}
-                </span>
-                <span>{count}×{count}</span>
-                <small>{count * count} pieces</small>
-              </button>
-            ))}
-            <div className="piece-custom">
-              <label>
-                Columns
-                <select
-                  value={spec.columns}
-                  onChange={(event) =>
-                    update("columns", Number(event.target.value))
-                  }
-                >
-                  {Array.from({ length: 15 }, (_, index) => index + 2).map(
-                    (count) => (
-                      <option key={count} value={count}>
-                        {count}
-                      </option>
-                    ),
-                  )}
-                </select>
-              </label>
-              <label>
-                Rows
-                <select
-                  value={spec.rows}
-                  onChange={(event) => update("rows", Number(event.target.value))}
-                >
-                  {Array.from({ length: 15 }, (_, index) => index + 2).map(
-                    (count) => (
-                      <option key={count} value={count}>
-                        {count}
-                      </option>
-                    ),
-                  )}
-                </select>
-              </label>
-              <div>
-                <strong>{spec.rows * spec.columns} pieces</strong>
-                <small>
-                  About {(spec.width_mm / spec.columns).toFixed(1)} mm wide each
-                </small>
+                  <span
+                    className="mini-grid"
+                    style={{
+                      gridTemplateColumns: `repeat(${count}, 1fr)`,
+                    }}
+                  >
+                    {Array.from({ length: count * count }).map((_, index) => (
+                      <i key={index} />
+                    ))}
+                  </span>
+                  <span>
+                    {count}×{count}
+                  </span>
+                  <small>{count * count} pieces</small>
+                </button>
+              ))}
+              <div className="piece-custom">
+                <label>
+                  Columns
+                  <select
+                    value={spec.columns}
+                    onChange={(event) =>
+                      update("columns", Number(event.target.value))
+                    }
+                  >
+                    {Array.from({ length: 15 }, (_, index) => index + 2).map(
+                      (count) => (
+                        <option key={count} value={count}>
+                          {count}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+                <label>
+                  Rows
+                  <select
+                    value={spec.rows}
+                    onChange={(event) =>
+                      update("rows", Number(event.target.value))
+                    }
+                  >
+                    {Array.from({ length: 15 }, (_, index) => index + 2).map(
+                      (count) => (
+                        <option key={count} value={count}>
+                          {count}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+                <div>
+                  <strong>{spec.rows * spec.columns} pieces</strong>
+                  <small>
+                    About {(spec.width_mm / spec.columns).toFixed(1)} mm wide
+                    each
+                  </small>
+                </div>
               </div>
-            </div>
-            {spec.width_mm / spec.columns < 10 && (
-              <p className="piece-warning">
-                These pieces are under 10 mm wide. Increase print width for
-                stronger knobs and easier handling.
-              </p>
-            )}
+              {spec.width_mm / spec.columns < 10 && (
+                <p className="piece-warning">
+                  These pieces are under 10 mm wide. Increase print width for
+                  stronger knobs and easier handling.
+                </p>
+              )}
             </fieldset>
           )}
 
           <fieldset
-            className="color-controls tray-controls"
+            className="color-controls tray-controls control-section"
             aria-label="Shallow terrain tray"
+            hidden={activeSection !== "tray"}
           >
             <div className="color-heading">
               <div>
@@ -1666,7 +1790,15 @@ export function TerrainStudio() {
             )}
           </fieldset>
 
-          <div className="engine-note">
+          <div className="output-intro" hidden={activeSection !== "output"}>
+            <strong>{job ? statusLabel : "No generation job yet."}</strong>
+            <p>
+              Generate a model to collect its color 3MF, tray, manifest, and
+              optional STL files here.
+            </p>
+          </div>
+
+          <div className="engine-note" hidden={activeSection !== "output"}>
             <span>Print source</span>
             <strong>
               <a
@@ -1706,15 +1838,11 @@ export function TerrainStudio() {
             </p>
           </div>
 
-          <button className="generate-button" type="submit" disabled={submitting}>
-            <span>{submitting ? "Starting…" : "Generate print files"}</span>
-            <span aria-hidden="true">↗</span>
-          </button>
-
           {(message || job) && (
             <section
               className={`job-card ${job?.status ?? "notice"}`}
               aria-live="polite"
+              hidden={activeSection !== "output"}
             >
               <div>
                 <span className="status-dot" />

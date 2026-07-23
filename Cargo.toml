@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/api", "crates/terrain-core"]
+members = ["apps/api", "crates/terrain-core", "src-tauri"]
 resolver = "3"
 
 [workspace.package]

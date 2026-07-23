@@ -1983,6 +1983,20 @@ pub fn generate_project_with_fields(
     generate_project_inner(spec, Some(height_field), surface_field, output_dir)
 }
 
+pub fn build_height_preview(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    size: usize,
+) -> Result<serde_json::Value> {
+    spec.validate()?;
+    Ok(build_preview(
+        spec,
+        Some(height_field),
+        None,
+        size.clamp(32, 128),
+    ))
+}
+
 fn generate_project_inner(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
@@ -3762,6 +3776,24 @@ mod tests {
             ..GenerationSpec::default()
         };
         assert_eq!(preview_sample_count(&spec), 384);
+    }
+
+    #[test]
+    fn fast_height_preview_uses_real_samples_and_caps_its_size() {
+        let field =
+            HeightField::new(2, 2, vec![100.0, 200.0, 300.0, 400.0], "preview-test").unwrap();
+        let preview = build_height_preview(&GenerationSpec::default(), &field, 512).unwrap();
+        let values = preview["values"].as_array().unwrap();
+
+        assert_eq!(preview["width"], 128);
+        assert_eq!(preview["height"], 128);
+        assert_eq!(values.len(), 128 * 128);
+        assert_eq!(
+            values.first().and_then(serde_json::Value::as_f64),
+            Some(0.0)
+        );
+        assert_eq!(values.last().and_then(serde_json::Value::as_f64), Some(1.0));
+        assert!(preview.get("surface_classes").is_none());
     }
 
     #[test]

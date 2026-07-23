@@ -76,6 +76,11 @@ compatible service. Review the
 [public service policy](https://operations.osmfoundation.org/policies/nominatim/)
 before wider or commercial use.
 
+The preview asks for a 64×64 real elevation sample after the location or ground
+span has been still for 450 ms. This gives the relief pane useful terrain before
+a full mesh job starts. It uses the same tile cache as generation. A completed
+job replaces it with the detailed generated preview.
+
 ## Requirements
 
 - Rust 1.96 or newer
@@ -98,6 +103,26 @@ npm run dev
 
 Open `http://127.0.0.1:3100`. The Rust API listens on
 `http://127.0.0.1:8787`.
+
+### Desktop app
+
+The Tauri app uses the same React controls and starts the Rust engine inside the
+app process, so it does not need a second terminal:
+
+```bash
+npm install
+npm run tauri dev
+```
+
+Build the desktop app with:
+
+```bash
+npm run tauri build
+```
+
+The desktop app keeps SQLite and generated jobs in its standard application
+data directory. Downloaded map inputs still use the shared OS cache described
+below.
 
 ## Storage
 
@@ -123,6 +148,7 @@ The browser uses `NEXT_PUBLIC_TERRAIN_API_URL` when set. See `.env.example`.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm test
+npm run test:ui
 ```
 
 ## Project shape
@@ -132,6 +158,7 @@ npm test
 - `apps/api`: global elevation provider, Axum API, SQLite jobs, background
   generation, ESA WorldCover sampling, and downloads
 - `app`: WebGL-free map, color relief preview, print controls, and job downloads
+- `desktop` and `src-tauri`: shared React entry point and native Tauri shell
 
 See [the color output plan](docs/color-output-plan.md) for the design and print
 checks behind the rock–forest–snow–water–road 3MF workflow.

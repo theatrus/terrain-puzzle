@@ -28,6 +28,7 @@ use tower_http::{
 use tracing::{error, info};
 use uuid::Uuid;
 
+mod cache;
 mod elevation;
 mod surface;
 
@@ -35,8 +36,7 @@ mod surface;
 struct AppState {
     db: Arc<StdMutex<Connection>>,
     jobs_dir: Arc<PathBuf>,
-    dem_cache_dir: Arc<PathBuf>,
-    road_cache_dir: Arc<PathBuf>,
+    map_cache_dir: Arc<PathBuf>,
     geocoder: Client,
     geocoder_base_url: Arc<String>,
     last_geocode_request: Arc<AsyncMutex<Instant>>,
@@ -100,8 +100,11 @@ async fn main() -> Result<()> {
 
     let data_dir = PathBuf::from(env::var("TERRAIN_DATA_DIR").unwrap_or_else(|_| "data".into()));
     let jobs_dir = data_dir.join("jobs");
+    let map_cache_dir = cache::root()?;
     std::fs::create_dir_all(&jobs_dir)
         .with_context(|| format!("create jobs directory {}", jobs_dir.display()))?;
+    std::fs::create_dir_all(&map_cache_dir)
+        .with_context(|| format!("create map cache directory {}", map_cache_dir.display()))?;
     let connection = Connection::open(data_dir.join("terrain-puzzle.sqlite3"))?;
     migrate(&connection)?;
     let geocoder = Client::builder()
@@ -112,8 +115,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         db: Arc::new(StdMutex::new(connection)),
         jobs_dir: Arc::new(jobs_dir),
-        dem_cache_dir: Arc::new(data_dir.join("dem-cache")),
-        road_cache_dir: Arc::new(data_dir.join("road-cache")),
+        map_cache_dir: Arc::new(map_cache_dir.clone()),
         geocoder,
         geocoder_base_url: Arc::new(
             env::var("NOMINATIM_BASE_URL")
@@ -139,7 +141,12 @@ async fn main() -> Result<()> {
 
     let address = env::var("TERRAIN_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let listener = TcpListener::bind(&address).await?;
-    info!(%address, "terrain api ready");
+    info!(
+        %address,
+        data_dir = %data_dir.display(),
+        map_cache_dir = %map_cache_dir.display(),
+        "terrain api ready"
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -404,10 +411,10 @@ fn canonical_job_id(id: &str) -> Option<String> {
 
 fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
     update_job(state, id, "running", 10, &[], None)?;
-    let height_field = elevation::fetch_height_field(spec, &state.dem_cache_dir)?;
+    let height_field = elevation::fetch_height_field(spec, &state.map_cache_dir.join("elevation"))?;
     update_job(state, id, "running", 40, &[], None)?;
-    let surface_field = if spec.color_output.enabled {
-        let field = surface::fetch_surface_field(spec, &state.road_cache_dir)?;
+    let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
+        let field = surface::fetch_surface_field(spec, &state.map_cache_dir)?;
         update_job(state, id, "running", 65, &[], None)?;
         Some(field)
     } else {

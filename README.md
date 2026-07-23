@@ -7,9 +7,9 @@ place and tune the printable model, including the mesh detail and surface
 colors.
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
-flat well shows equal-height contour lines. Its front wall shows the chosen
-place name, latitude, and longitude. Controls set the tray clearance, rim, floor,
-line count, and three print colors.
+flat well shows fine equal-height contour lines. Raised text on the front top
+lip shows the chosen place name, latitude, and longitude. Controls set the tray
+clearance, rim, floor, line count, and three print colors.
 
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
 model with a straight outer edge and no puzzle seams. It keeps the full source
@@ -19,7 +19,8 @@ Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
 pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
-registry and keeps a local tile cache under `data/dem-cache`.
+registry. The service caches elevation, ESA WorldCover, and OpenStreetMap input
+under the operating system's user cache directory.
 
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
@@ -28,6 +29,11 @@ OpenStreetMap through Overpass, then draws motorway, trunk, primary, and
 secondary roads at print-safe widths. If none cross the selected area, it draws
 paths, footways, bridleways, tracks, and cycleways as a trail fallback. The 3MF
 stores standard triangle color properties. STL files stay single-color.
+
+Building mode reads OpenStreetMap footprints and raises them above the terrain.
+It uses tagged height first, then floor count, then an 8 m default. Its own Z
+scale controls vertical exaggeration against the map's plan scale. Buildings
+can run with or without surface color output.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests
@@ -64,6 +70,17 @@ Open `http://127.0.0.1:3100`. The Rust API listens on
 SQLite and generated jobs live under `data/`, which Git ignores. Set
 `TERRAIN_DATA_DIR` to use another directory.
 
+Downloaded map inputs use the standard per-user cache path:
+
+- macOS: `~/Library/Caches/com.theatrus.terrain-puzzle`
+- Linux: `$XDG_CACHE_HOME/terrain-puzzle` or `~/.cache/terrain-puzzle`
+- Windows: `%LOCALAPPDATA%\theatrus\terrain-puzzle\cache`
+
+Set `TERRAIN_CACHE_DIR` to override that path. The cache keeps elevation PNG
+tiles, full ESA WorldCover GeoTIFF tiles, and OpenStreetMap route responses.
+Writes use a temporary file and an atomic rename, so a stopped download does
+not leave a valid-looking partial tile.
+
 The browser uses `NEXT_PUBLIC_TERRAIN_API_URL` when set. See `.env.example`.
 
 ## Check
@@ -98,6 +115,6 @@ Color manifests also record the ESA WorldCover tile and attribution:
 <https://worldcover2021.esa.int/download>
 
 When road output is on, manifests also record the OpenStreetMap source and
-attribution. Overpass responses are cached under `data/road-cache`:
+attribution. Overpass responses use the same OS cache:
 
 <https://www.openstreetmap.org/copyright>

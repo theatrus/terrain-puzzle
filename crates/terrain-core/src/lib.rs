@@ -27,6 +27,7 @@ pub struct GenerationSpec {
     pub solid_model: bool,
     pub place_name: String,
     pub tray: TraySpec,
+    pub buildings: BuildingSpec,
     pub color_output: ColorOutputSpec,
 }
 
@@ -46,6 +47,7 @@ impl Default for GenerationSpec {
             solid_model: false,
             place_name: "Mount Rainier".into(),
             tray: TraySpec::default(),
+            buildings: BuildingSpec::default(),
             color_output: ColorOutputSpec::default(),
         }
     }
@@ -87,12 +89,38 @@ impl GenerationSpec {
             bail!("place label cannot contain control characters");
         }
         self.tray.validate()?;
+        self.buildings.validate()?;
         self.color_output.validate()?;
         Ok(())
     }
 
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BuildingSpec {
+    pub enabled: bool,
+    pub z_scale: f32,
+}
+
+impl Default for BuildingSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            z_scale: 5.0,
+        }
+    }
+}
+
+impl BuildingSpec {
+    fn validate(&self) -> Result<()> {
+        if !(0.5..=30.0).contains(&self.z_scale) {
+            bail!("building Z scale must be between 0.5 and 30");
+        }
+        Ok(())
     }
 }
 
@@ -121,7 +149,7 @@ impl Default for TraySpec {
             rim_width_mm: 8.0,
             floor_mm: 1.6,
             rim_height_mm: 3.2,
-            contour_count: 12,
+            contour_count: 18,
         }
     }
 }
@@ -149,8 +177,8 @@ impl TraySpec {
         if !(2.0..=8.0).contains(&self.rim_height_mm) {
             bail!("tray rim height must be between 2 and 8 mm");
         }
-        if !(5..=30).contains(&self.contour_count) {
-            bail!("tray contour count must be between 5 and 30");
+        if !(5..=60).contains(&self.contour_count) {
+            bail!("tray contour count must be between 5 and 60");
         }
         Ok(())
     }
@@ -266,6 +294,7 @@ pub struct SurfaceField {
     pub width: usize,
     pub height: usize,
     pub classes: Vec<SurfaceClass>,
+    pub building_heights_m: Vec<f32>,
     pub source: String,
 }
 
@@ -286,6 +315,7 @@ impl SurfaceField {
             width,
             height,
             classes,
+            building_heights_m: vec![0.0; width * height],
             source: source.into(),
         })
     }
@@ -352,6 +382,71 @@ impl SurfaceField {
         }
     }
 
+    pub fn paint_building(&mut self, points: &[[f32; 2]], height_m: f32) {
+        if points.len() < 3 || !height_m.is_finite() || height_m <= 0.0 {
+            return;
+        }
+        let pixels = points
+            .iter()
+            .map(|point| {
+                [
+                    point[0] * (self.width - 1) as f32,
+                    point[1] * (self.height - 1) as f32,
+                ]
+            })
+            .collect::<Vec<_>>();
+        let polygon_min_x = pixels
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::INFINITY, f32::min);
+        let polygon_max_x = pixels
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let polygon_min_y = pixels
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::INFINITY, f32::min);
+        let polygon_max_y = pixels
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        if polygon_max_x < 0.0
+            || polygon_min_x > (self.width - 1) as f32
+            || polygon_max_y < 0.0
+            || polygon_min_y > (self.height - 1) as f32
+        {
+            return;
+        }
+        let min_x = polygon_min_x.floor().max(0.0) as usize;
+        let max_x = polygon_max_x.ceil().min((self.width - 1) as f32) as usize;
+        let min_y = polygon_min_y.floor().max(0.0) as usize;
+        let max_y = polygon_max_y.ceil().min((self.height - 1) as f32) as usize;
+        let mut painted = false;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                if point_in_polygon([x as f32, y as f32], &pixels) {
+                    let height = &mut self.building_heights_m[y * self.width + x];
+                    *height = height.max(height_m);
+                    painted = true;
+                }
+            }
+        }
+        if !painted {
+            let center = pixels.iter().fold([0.0, 0.0], |sum, point| {
+                [sum[0] + point[0], sum[1] + point[1]]
+            });
+            let x = (center[0] / pixels.len() as f32)
+                .round()
+                .clamp(0.0, (self.width - 1) as f32) as usize;
+            let y = (center[1] / pixels.len() as f32)
+                .round()
+                .clamp(0.0, (self.height - 1) as f32) as usize;
+            let height = &mut self.building_heights_m[y * self.width + x];
+            *height = height.max(height_m);
+        }
+    }
+
     fn filter_components_smaller_than(&mut self, minimum_cells: usize) {
         let original = self.classes.clone();
         let mut visited = vec![false; original.len()];
@@ -412,6 +507,12 @@ impl SurfaceField {
         let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
         let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
         self.classes[y * self.width + x]
+    }
+
+    fn building_height_at(&self, u: f32, v: f32) -> f32 {
+        let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
+        self.building_heights_m[y * self.width + x]
     }
 
     fn coverage(&self) -> [f32; 5] {
@@ -516,6 +617,53 @@ impl MeshBuilder {
         self.triangle(a, c, d, material);
     }
 
+    fn cuboid(&mut self, minimum: [f32; 3], maximum: [f32; 3], material: SurfaceClass) {
+        let [x0, y0, z0] = minimum;
+        let [x1, y1, z1] = maximum;
+        self.quad(
+            [x0, y0, z1],
+            [x1, y0, z1],
+            [x1, y1, z1],
+            [x0, y1, z1],
+            material,
+        );
+        self.quad(
+            [x0, y1, z0],
+            [x1, y1, z0],
+            [x1, y0, z0],
+            [x0, y0, z0],
+            material,
+        );
+        self.quad(
+            [x0, y0, z0],
+            [x1, y0, z0],
+            [x1, y0, z1],
+            [x0, y0, z1],
+            material,
+        );
+        self.quad(
+            [x1, y1, z0],
+            [x0, y1, z0],
+            [x0, y1, z1],
+            [x1, y1, z1],
+            material,
+        );
+        self.quad(
+            [x0, y1, z0],
+            [x0, y0, z0],
+            [x0, y0, z1],
+            [x0, y1, z1],
+            material,
+        );
+        self.quad(
+            [x1, y0, z0],
+            [x1, y1, z0],
+            [x1, y1, z1],
+            [x1, y0, z1],
+            material,
+        );
+    }
+
     fn finish(self, name: impl Into<String>) -> Mesh {
         Mesh {
             name: name.into(),
@@ -538,8 +686,8 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh
     let inner_y1 = inner_y0 + inner_height;
     let floor_z = tray.floor_mm;
     let rim_z = tray.floor_mm + tray.rim_height_mm;
-    let mut x_coordinates = regular_coordinates(0.0, outer_width, 0.58);
-    let mut y_coordinates = regular_coordinates(0.0, outer_height, 0.58);
+    let mut x_coordinates = regular_coordinates(0.0, outer_width, 0.35);
+    let mut y_coordinates = regular_coordinates(0.0, outer_height, 0.35);
     insert_coordinate(&mut x_coordinates, inner_x0);
     insert_coordinate(&mut x_coordinates, inner_x1);
     insert_coordinate(&mut y_coordinates, inner_y0);
@@ -574,14 +722,8 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh
         .copied()
         .filter(|y| *y >= inner_y1)
         .collect::<Vec<_>>();
-    let label = tray_label(spec, outer_width, rim_z);
-    let mut z_coordinates = vec![0.0, rim_z];
-    for row in 0..=7 {
-        z_coordinates.push(label.origin_z + row as f32 * label.scale);
-    }
-    z_coordinates.sort_by(f32::total_cmp);
-    z_coordinates.dedup_by(|a, b| (*a - *b).abs() < 0.000_01);
-    z_coordinates.retain(|z| *z >= 0.0 && *z <= rim_z);
+    let label = tray_label(spec, outer_width, tray.rim_width_mm);
+    let z_coordinates = [0.0, rim_z];
 
     let height_range = height_field.map(HeightField::range);
     let mut mesh = MeshBuilder::default();
@@ -689,17 +831,12 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh
 
     for z in z_coordinates.windows(2) {
         for x in x_coordinates.windows(2) {
-            let material = if label.contains((x[0] + x[1]) * 0.5, (z[0] + z[1]) * 0.5) {
-                SurfaceClass::Snow
-            } else {
-                SurfaceClass::Rock
-            };
             mesh.quad(
                 [x[0], 0.0, z[0]],
                 [x[1], 0.0, z[0]],
                 [x[1], 0.0, z[1]],
                 [x[0], 0.0, z[1]],
-                material,
+                SurfaceClass::Rock,
             );
             mesh.quad(
                 [x[1], outer_height, z[0]],
@@ -751,6 +888,7 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh
         let next = boundary[(index + 1) % boundary.len()];
         mesh.triangle(center, next, current, SurfaceClass::Rock);
     }
+    label.add_embossed_shapes(&mut mesh, rim_z);
 
     mesh.finish("terrain-tray")
 }
@@ -774,7 +912,7 @@ fn contour_band(
 }
 
 fn regular_coordinates(start: f32, end: f32, maximum_step: f32) -> Vec<f32> {
-    let segments = (((end - start) / maximum_step).ceil().max(1.0) as usize).min(720);
+    let segments = (((end - start) / maximum_step).ceil().max(1.0) as usize).min(1_024);
     (0..=segments)
         .map(|index| start + (end - start) * index as f32 / segments as f32)
         .collect()
@@ -789,31 +927,39 @@ fn insert_coordinate(coordinates: &mut Vec<f32>, value: f32) {
 struct TrayLabel {
     text: Vec<char>,
     origin_x: f32,
-    origin_z: f32,
+    origin_y: f32,
     scale: f32,
 }
 
 impl TrayLabel {
-    fn contains(&self, x: f32, z: f32) -> bool {
-        let local_x = (x - self.origin_x) / self.scale;
-        let local_z = (z - self.origin_z) / self.scale;
-        if local_x < 0.0 || !(0.0..7.0).contains(&local_z) {
-            return false;
+    fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) {
+        let inset = self.scale * 0.08;
+        for (character_index, character) in self.text.iter().enumerate() {
+            for (row, bits) in glyph_rows(*character).into_iter().enumerate() {
+                for column in 0..5 {
+                    if bits & (1 << (4 - column)) == 0 {
+                        continue;
+                    }
+                    let x0 = self.origin_x
+                        + (character_index as f32 * 6.0 + column as f32) * self.scale
+                        + inset;
+                    let y0 = self.origin_y + (6 - row) as f32 * self.scale + inset;
+                    mesh.cuboid(
+                        [x0, y0, rim_z - 0.02],
+                        [
+                            x0 + self.scale - inset * 2.0,
+                            y0 + self.scale - inset * 2.0,
+                            rim_z + 0.56,
+                        ],
+                        SurfaceClass::Snow,
+                    );
+                }
+            }
         }
-        let character = (local_x / 6.0).floor() as usize;
-        if character >= self.text.len() {
-            return false;
-        }
-        let column = (local_x - character as f32 * 6.0).floor() as usize;
-        if column >= 5 {
-            return false;
-        }
-        let row = 6_usize.saturating_sub(local_z.floor() as usize);
-        glyph_rows(self.text[character])[row] & (1 << (4 - column)) != 0
     }
 }
 
-fn tray_label(spec: &GenerationSpec, width: f32, height: f32) -> TrayLabel {
+fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> TrayLabel {
     let mut place = spec
         .place_name
         .chars()
@@ -836,12 +982,12 @@ fn tray_label(spec: &GenerationSpec, width: f32, height: f32) -> TrayLabel {
     let logical_width = (text.len() * 6).saturating_sub(1) as f32;
     let scale = 0.52_f32
         .min((width - 4.0) / logical_width.max(1.0))
-        .min((height - 0.8) / 7.0);
+        .min((lip_depth - 2.0) / 7.0);
     let text_width = logical_width * scale;
     TrayLabel {
         text,
         origin_x: (width - text_width) * 0.5,
-        origin_z: (height - scale * 7.0) * 0.5,
+        origin_y: (lip_depth - scale * 7.0) * 0.5,
         scale,
     }
 }
@@ -929,6 +1075,9 @@ fn generate_project_inner(
     spec.validate()?;
     if spec.color_output.enabled && surface_field.is_none() {
         bail!("color output requires ESA WorldCover surface data");
+    }
+    if spec.buildings.enabled && surface_field.is_none() {
+        bail!("building output requires OpenStreetMap building data");
     }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
@@ -1121,6 +1270,12 @@ fn build_piece(
                             spec.center_lat,
                             spec.center_lon,
                         )
+                    + building_height_mm(
+                        spec,
+                        surface_field,
+                        assembled_x / assembled_width,
+                        assembled_y / assembled_height,
+                    )
             } else {
                 0.0
             };
@@ -1566,6 +1721,21 @@ fn normalized_height(
     }
 }
 
+fn building_height_mm(
+    spec: &GenerationSpec,
+    surface_field: Option<&SurfaceField>,
+    u: f32,
+    v: f32,
+) -> f32 {
+    if !spec.buildings.enabled {
+        return 0.0;
+    }
+    let height_m = surface_field
+        .map(|field| field.building_height_at(u, v))
+        .unwrap_or(0.0);
+    height_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0) * spec.buildings.z_scale
+}
+
 fn build_preview(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
@@ -1579,14 +1749,11 @@ fn build_preview(
         for x in 0..size {
             let u = x as f32 / (size - 1) as f32;
             let v = y as f32 / (size - 1) as f32;
-            heights.push(normalized_height(
-                height_field,
-                range,
-                u,
-                v,
-                spec.center_lat,
-                spec.center_lon,
-            ));
+            let terrain =
+                normalized_height(height_field, range, u, v, spec.center_lat, spec.center_lon);
+            let building =
+                building_height_mm(spec, surface_field, u, v) / spec.relief_mm.max(f32::EPSILON);
+            heights.push(terrain + building);
             if let (Some(field), Some(classes)) = (surface_field, surface_classes.as_mut()) {
                 classes.push(field.at(u, v).material_index());
             }
@@ -1930,6 +2097,21 @@ mod tests {
         assert!(mesh.materials.contains(&SurfaceClass::Rock));
         assert!(mesh.materials.contains(&SurfaceClass::Forest));
         assert!(mesh.materials.contains(&SurfaceClass::Snow));
+        let rim_z = spec.tray.floor_mm + spec.tray.rim_height_mm;
+        let raised_label = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Snow)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        assert!(raised_label.iter().any(|vertex| vertex[2] > rim_z));
+        assert!(
+            raised_label
+                .iter()
+                .all(|vertex| vertex[1] < spec.tray.rim_width_mm)
+        );
     }
 
     #[test]
@@ -2174,6 +2356,8 @@ mod tests {
         assert!(!spec.solid_model);
         assert_eq!(spec.place_name, "Mount Rainier");
         assert!(!spec.tray.enabled);
+        assert!(!spec.buildings.enabled);
+        assert_eq!(spec.buildings.z_scale, 5.0);
         assert_eq!(spec.color_output.water_color, "#2F76B5");
         assert_eq!(spec.color_output.road_color, "#D8A33C");
         assert!(spec.color_output.roads_enabled);
@@ -2189,6 +2373,83 @@ mod tests {
         assert_eq!(field.classes[10 * 21 + 10], SurfaceClass::Road);
         assert_eq!(field.classes[9 * 21 + 10], SurfaceClass::Road);
         assert_eq!(field.classes[7 * 21 + 10], SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn surface_field_paints_scaled_building_heights() {
+        let mut field =
+            SurfaceField::new(21, 21, vec![SurfaceClass::Rock; 21 * 21], "test").unwrap();
+        field.paint_building(
+            &[[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]],
+            12.0,
+        );
+        assert_eq!(field.building_height_at(0.5, 0.5), 12.0);
+        assert_eq!(field.building_height_at(0.1, 0.1), 0.0);
+
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            ground_span_km: 1.0,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 2.0,
+            },
+            ..GenerationSpec::default()
+        };
+        assert!((building_height_mm(&spec, Some(&field), 0.5, 0.5) - 2.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn buildings_raise_the_printed_mesh() {
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "buildings").unwrap();
+        field.building_heights_m.fill(12.0);
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            ground_span_km: 1.0,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 2.0,
+            },
+            ..GenerationSpec::default()
+        };
+        let raised = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        let flat = build_piece(
+            &GenerationSpec {
+                buildings: BuildingSpec {
+                    enabled: false,
+                    ..spec.buildings.clone()
+                },
+                ..spec.clone()
+            },
+            None,
+            Some(&field),
+            0,
+            0,
+        )
+        .unwrap();
+        let raised_top = raised
+            .vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let flat_top = flat
+            .vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((raised_top - flat_top - 1.44).abs() < 0.001);
+    }
+
+    #[test]
+    fn tray_contour_grid_uses_submillimetre_cells() {
+        let coordinates = regular_coordinates(0.0, 180.0, 0.35);
+        let largest = coordinates
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .fold(0.0, f32::max);
+        assert!(largest <= 0.351);
     }
 
     #[test]

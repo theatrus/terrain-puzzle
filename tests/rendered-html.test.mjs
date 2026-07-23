@@ -36,6 +36,8 @@ test("server-renders Terrain Puzzle Studio", async () => {
   assert.match(html, /Solid terrain/);
   assert.match(html, /Shallow terrain tray/);
   assert.match(html, /Tray place label/);
+  assert.match(html, /Mapped buildings/);
+  assert.match(html, /Render roads/);
   assert.match(html, /SQLite/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

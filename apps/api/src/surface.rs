@@ -1,10 +1,17 @@
-use std::{collections::HashMap, env, fs, path::Path, time::Duration};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
-use geotiff_reader::cog::HttpGeoTiffFile;
+use geotiff_reader::GeoTiffFile;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use terrain_core::{GenerationSpec, SurfaceClass, SurfaceField};
+
+use crate::cache;
 
 const WORLD_COVER_BASE_URL: &str =
     "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map";
@@ -57,51 +64,58 @@ struct RouteCounts {
     trails: usize,
 }
 
-pub fn fetch_surface_field(spec: &GenerationSpec, road_cache_dir: &Path) -> Result<SurfaceField> {
+pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Result<SurfaceField> {
     let width = (spec.columns * spec.samples_per_piece + 1) as usize;
     let height = (spec.rows * spec.samples_per_piece + 1) as usize;
     let bounds = bounds_for(spec);
-    let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
-
-    for row in 0..height {
-        let v = row as f64 / (height - 1) as f64;
-        let latitude = bounds.south + (bounds.north - bounds.south) * v;
-        for column in 0..width {
-            let u = column as f64 / (width - 1) as f64;
-            let longitude = normalize_longitude(bounds.west + (bounds.east - bounds.west) * u);
-            tiles
-                .entry(world_cover_tile(longitude, latitude))
-                .or_default()
-                .push(SamplePoint {
-                    output_index: row * width + column,
-                    longitude,
-                    latitude,
-                });
-        }
-    }
-
     let mut classes = vec![SurfaceClass::Rock; width * height];
-    let mut tile_names = tiles.keys().cloned().collect::<Vec<_>>();
-    tile_names.sort();
-    for tile_name in &tile_names {
-        let points = tiles
-            .remove(tile_name)
-            .context("land-cover tile group disappeared")?;
-        sample_tile(tile_name, &points, width, height, &mut classes)?;
-    }
+    let mut source = String::new();
 
-    let mut field = SurfaceField::new(
-        width,
-        height,
-        classes,
-        format!(
+    if spec.color_output.enabled {
+        let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
+        for row in 0..height {
+            let v = row as f64 / (height - 1) as f64;
+            let latitude = bounds.south + (bounds.north - bounds.south) * v;
+            for column in 0..width {
+                let u = column as f64 / (width - 1) as f64;
+                let longitude = normalize_longitude(bounds.west + (bounds.east - bounds.west) * u);
+                tiles
+                    .entry(world_cover_tile(longitude, latitude))
+                    .or_default()
+                    .push(SamplePoint {
+                        output_index: row * width + column,
+                        longitude,
+                        latitude,
+                    });
+            }
+        }
+        let mut tile_names = tiles.keys().cloned().collect::<Vec<_>>();
+        tile_names.sort();
+        for tile_name in &tile_names {
+            let points = tiles
+                .remove(tile_name)
+                .context("land-cover tile group disappeared")?;
+            sample_tile(
+                tile_name,
+                &points,
+                width,
+                height,
+                &mut classes,
+                &map_cache_dir.join("world-cover"),
+            )?;
+        }
+        source = format!(
             "ESA WorldCover 2021 v200, 10 m, EPSG:4326, tiles {}; CC BY 4.0; source: {WORLD_COVER_INFO_URL}; {WORLD_COVER_ATTRIBUTION}",
             tile_names.join(", ")
-        ),
-    )?;
-    field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
-    if spec.color_output.roads_enabled {
-        let counts = paint_roads_or_trails(spec, bounds, road_cache_dir, &mut field)?;
+        );
+    }
+
+    let mut field = SurfaceField::new(width, height, classes, source)?;
+    if spec.color_output.enabled {
+        field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
+    }
+    if spec.color_output.enabled && spec.color_output.roads_enabled {
+        let counts = paint_roads_or_trails(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
         if counts.roads > 0 {
             field.source.push_str(&format!(
                 "; prominent roads: {} OpenStreetMap ways via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
@@ -112,6 +126,18 @@ pub fn fetch_surface_field(spec: &GenerationSpec, road_cache_dir: &Path) -> Resu
                 "; no prominent roads found; trail fallback: {} OpenStreetMap ways via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
                 counts.trails
             ));
+        }
+    }
+    if spec.buildings.enabled {
+        let count = paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
+        let building_source = format!(
+            "buildings: {count} OpenStreetMap footprints via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}"
+        );
+        if field.source.is_empty() {
+            field.source = building_source;
+        } else {
+            field.source.push_str("; ");
+            field.source.push_str(&building_source);
         }
     }
     Ok(field)
@@ -188,6 +214,56 @@ fn paint_osm_ways(
     painted
 }
 
+fn paint_buildings(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    field: &mut SurfaceField,
+) -> Result<usize> {
+    let response = fetch_osm_response(spec, cache_dir, "buildings", building_query(bounds))?;
+    let mut painted = 0;
+    for building in response.elements {
+        if building.geometry.len() < 3 {
+            continue;
+        }
+        let points = building
+            .geometry
+            .iter()
+            .map(|point| {
+                let longitude = unwrap_longitude(point.lon, spec.center_lon);
+                [
+                    ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
+                    ((point.lat - bounds.south) / (bounds.north - bounds.south)) as f32,
+                ]
+            })
+            .collect::<Vec<_>>();
+        field.paint_building(&points, building_height_m(&building.tags));
+        painted += 1;
+    }
+    Ok(painted)
+}
+
+fn building_height_m(tags: &HashMap<String, String>) -> f32 {
+    tags.get("height")
+        .and_then(|value| first_number(value))
+        .or_else(|| {
+            tags.get("building:levels")
+                .and_then(|value| first_number(value))
+                .map(|levels| levels * 3.0)
+        })
+        .unwrap_or(8.0)
+        .clamp(2.5, 200.0)
+}
+
+fn first_number(value: &str) -> Option<f32> {
+    let number = value
+        .trim()
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect::<String>();
+    number.parse().ok()
+}
+
 fn fetch_osm_ways(
     spec: &GenerationSpec,
     bounds: GeoBounds,
@@ -195,8 +271,22 @@ fn fetch_osm_ways(
     cache_prefix: &str,
     highway_filter: &str,
 ) -> Result<OverpassResponse> {
+    fetch_osm_response(
+        spec,
+        cache_dir,
+        cache_prefix,
+        overpass_query(bounds, highway_filter),
+    )
+}
+
+fn fetch_osm_response(
+    spec: &GenerationSpec,
+    cache_dir: &Path,
+    cache_prefix: &str,
+    query: String,
+) -> Result<OverpassResponse> {
     fs::create_dir_all(cache_dir)
-        .with_context(|| format!("create road cache {}", cache_dir.display()))?;
+        .with_context(|| format!("create OpenStreetMap cache {}", cache_dir.display()))?;
     let cache_path = cache_dir.join(format!(
         "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
         spec.center_lat, spec.center_lon, spec.ground_span_km,
@@ -204,7 +294,6 @@ fn fetch_osm_ways(
     let (bytes, should_cache) = match fs::read(&cache_path) {
         Ok(bytes) => (bytes, false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let query = overpass_query(bounds, highway_filter);
             let base_url =
                 env::var("OVERPASS_BASE_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.into());
             let client = Client::builder()
@@ -218,27 +307,54 @@ fn fetch_osm_ways(
                 .send()
                 .with_context(|| format!("request {cache_prefix} from OpenStreetMap Overpass"))?
                 .error_for_status()
-                .context("OpenStreetMap Overpass rejected the road request")?
+                .with_context(|| {
+                    format!("OpenStreetMap Overpass rejected the {cache_prefix} request")
+                })?
                 .bytes()
                 .with_context(|| format!("read OpenStreetMap {cache_prefix} response"))?
                 .to_vec();
             (bytes, true)
         }
         Err(error) => {
-            return Err(error).with_context(|| format!("read road cache {}", cache_path.display()));
+            return Err(error)
+                .with_context(|| format!("read OpenStreetMap cache {}", cache_path.display()));
         }
     };
     let response: OverpassResponse = serde_json::from_slice(&bytes)
         .with_context(|| format!("parse OpenStreetMap Overpass {cache_prefix} response"))?;
     if should_cache {
-        fs::write(&cache_path, &bytes)
-            .with_context(|| format!("cache road data {}", cache_path.display()))?;
+        cache::store(&cache_path, &bytes)
+            .with_context(|| format!("cache OpenStreetMap data {}", cache_path.display()))?;
     }
     Ok(response)
 }
 
 fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
-    let bboxes = if bounds.west < -180.0 {
+    let ways = osm_bboxes(bounds)
+        .iter()
+        .map(|(south, west, north, east)| {
+            format!(
+                "way[\"highway\"~\"^({highway_filter})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+            )
+        })
+        .collect::<String>();
+    format!("[out:json][timeout:30];({ways});out tags geom;")
+}
+
+fn building_query(bounds: GeoBounds) -> String {
+    let ways = osm_bboxes(bounds)
+        .iter()
+        .map(|(south, west, north, east)| {
+            format!(
+                "way[\"building\"][\"building\"!=\"no\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+            )
+        })
+        .collect::<String>();
+    format!("[out:json][timeout:60];({ways});out tags geom;")
+}
+
+fn osm_bboxes(bounds: GeoBounds) -> Vec<(f64, f64, f64, f64)> {
+    if bounds.west < -180.0 {
         vec![
             (bounds.south, bounds.west + 360.0, bounds.north, 180.0),
             (bounds.south, -180.0, bounds.north, bounds.east),
@@ -250,16 +366,7 @@ fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
         ]
     } else {
         vec![(bounds.south, bounds.west, bounds.north, bounds.east)]
-    };
-    let ways = bboxes
-        .iter()
-        .map(|(south, west, north, east)| {
-            format!(
-                "way[\"highway\"~\"^({highway_filter})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});"
-            )
-        })
-        .collect::<String>();
-    format!("[out:json][timeout:30];({ways});out tags geom;")
+    }
 }
 
 fn road_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
@@ -299,11 +406,11 @@ fn sample_tile(
     target_width: usize,
     target_height: usize,
     output: &mut [SurfaceClass],
+    cache_dir: &Path,
 ) -> Result<()> {
-    let url = format!("{WORLD_COVER_BASE_URL}/ESA_WorldCover_10m_2021_v200_{tile_name}_Map.tif");
-    let remote = HttpGeoTiffFile::open(&url)
-        .with_context(|| format!("open ESA WorldCover tile {tile_name}"))?;
-    let geotiff = remote.inner();
+    let path = cached_world_cover_tile(tile_name, cache_dir)?;
+    let geotiff = GeoTiffFile::open(&path)
+        .with_context(|| format!("open cached ESA WorldCover tile {}", path.display()))?;
     if geotiff.epsg() != Some(4326) {
         bail!(
             "ESA WorldCover tile {tile_name} uses unexpected CRS {:?}",
@@ -412,6 +519,28 @@ fn sample_tile(
     Ok(())
 }
 
+fn cached_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<PathBuf> {
+    let file_name = format!("ESA_WorldCover_10m_2021_v200_{tile_name}_Map.tif");
+    let path = cache_dir.join(&file_name);
+    if path.is_file() {
+        return Ok(path);
+    }
+    let url = format!("{WORLD_COVER_BASE_URL}/{file_name}");
+    let response = Client::builder()
+        .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .timeout(Duration::from_secs(300))
+        .build()
+        .context("build ESA WorldCover client")?
+        .get(&url)
+        .send()
+        .with_context(|| format!("download ESA WorldCover tile {tile_name}"))?
+        .error_for_status()
+        .with_context(|| format!("ESA WorldCover rejected tile {tile_name}"))?;
+    cache::store_reader(&path, response)
+        .with_context(|| format!("cache ESA WorldCover tile {}", path.display()))?;
+    Ok(path)
+}
+
 fn classify_world_cover(value: u8) -> SurfaceClass {
     match value {
         10 => SurfaceClass::Forest,
@@ -498,6 +627,28 @@ mod tests {
         let tags = |class: &str| HashMap::from([("highway".into(), class.into())]);
         assert!(trail_width_scale(&tags("track")) > trail_width_scale(&tags("path")));
         assert_eq!(trail_width_scale(&tags("primary")), None);
+    }
+
+    #[test]
+    fn builds_building_query_and_reads_height_tags() {
+        let query = building_query(GeoBounds {
+            south: 46.8,
+            north: 46.9,
+            west: -121.9,
+            east: -121.7,
+        });
+        assert!(query.contains("[\"building\"]"));
+        assert!(query.contains("[\"building\"!=\"no\"]"));
+        assert!(query.contains("out tags geom"));
+        assert_eq!(
+            building_height_m(&HashMap::from([("height".into(), "12.5 m".into())])),
+            12.5
+        );
+        assert_eq!(
+            building_height_m(&HashMap::from([("building:levels".into(), "4".into())])),
+            12.0
+        );
+        assert_eq!(building_height_m(&HashMap::new()), 8.0);
     }
 
     #[test]

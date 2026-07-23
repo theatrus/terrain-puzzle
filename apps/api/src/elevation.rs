@@ -10,6 +10,8 @@ use image::RgbImage;
 use reqwest::blocking::Client;
 use terrain_core::{GenerationSpec, HeightField};
 
+use crate::cache;
+
 const TILE_SIZE: f64 = 256.0;
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const TILE_BASE_URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
@@ -112,10 +114,7 @@ fn load_tile(client: &Client, cache_dir: &Path, zoom: u8, x: u32, y: u32) -> Res
             );
         }
         let bytes = response.bytes()?.to_vec();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, &bytes)
+        cache::store(&path, &bytes)
             .with_context(|| format!("cache elevation tile {}", path.display()))?;
         bytes
     };

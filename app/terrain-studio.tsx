@@ -24,6 +24,10 @@ type GenerationSpec = {
   samples_per_piece: number;
   solid_model: boolean;
   place_name: string;
+  buildings: {
+    enabled: boolean;
+    z_scale: number;
+  };
   tray: {
     enabled: boolean;
     tray_color: string;
@@ -112,6 +116,10 @@ const initialSpec: GenerationSpec = {
   samples_per_piece: 64,
   solid_model: false,
   place_name: "Mount Rainier",
+  buildings: {
+    enabled: false,
+    z_scale: 5,
+  },
   tray: {
     enabled: true,
     tray_color: "#252822",
@@ -121,7 +129,7 @@ const initialSpec: GenerationSpec = {
     rim_width_mm: 8,
     floor_mm: 1.6,
     rim_height_mm: 3.2,
-    contour_count: 12,
+    contour_count: 18,
   },
   color_output: {
     enabled: true,
@@ -879,6 +887,19 @@ export function TerrainStudio() {
     },
     [],
   );
+  const updateBuildings = useCallback(
+    <Key extends keyof GenerationSpec["buildings"]>(
+      key: Key,
+      value: GenerationSpec["buildings"][Key],
+    ) => {
+      setPreview(null);
+      setSpec((current) => ({
+        ...current,
+        buildings: { ...current.buildings, [key]: value },
+      }));
+    },
+    [],
+  );
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
     setPreview(null);
@@ -989,7 +1010,18 @@ export function TerrainStudio() {
     if (job.status === "failed") return job.error ?? "Generation failed.";
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.progress < 40) return "Sampling global elevation…";
-    if (job.progress < 65 && job.spec.color_output.enabled) {
+    if (
+      job.progress < 65 &&
+      (job.spec.color_output.enabled || job.spec.buildings.enabled)
+    ) {
+      if (job.spec.buildings.enabled && !job.spec.color_output.enabled) {
+        return "Mapping building footprints…";
+      }
+      if (job.spec.buildings.enabled) {
+        return job.spec.color_output.roads_enabled
+          ? "Mapping land cover, routes, and buildings…"
+          : "Mapping land cover and buildings…";
+      }
       return job.spec.color_output.roads_enabled
         ? "Mapping land cover, roads, or fallback trails…"
         : "Mapping forest, rock, snow, and water…";
@@ -1243,9 +1275,9 @@ export function TerrainStudio() {
                         updateColor("roads_enabled", event.target.checked)
                       }
                     />
-                    <span>Roads / trail fallback</span>
+                    <span>Render roads</span>
                   </label>
-                  <small>Trails only where roads are absent</small>
+                  <small>Falls back to trails when no roads cross the map</small>
                 </div>
                 {spec.color_output.roads_enabled && (
                   <RangeField
@@ -1265,6 +1297,46 @@ export function TerrainStudio() {
                   trails only when no roads cross the model. Tunnels stay
                   hidden. Snow is not live. Sides and bottoms use the rock
                   color.
+                </p>
+              </>
+            )}
+          </fieldset>
+
+          <fieldset
+            className="color-controls building-controls"
+            aria-label="Mapped buildings"
+          >
+            <div className="color-heading">
+              <div>
+                <strong className="color-title">Mapped buildings</strong>
+                <p>Raise OpenStreetMap building footprints above the terrain.</p>
+              </div>
+              <label className="color-toggle">
+                <input
+                  type="checkbox"
+                  checked={spec.buildings.enabled}
+                  onChange={(event) =>
+                    updateBuildings("enabled", event.target.checked)
+                  }
+                />
+                <span>{spec.buildings.enabled ? "On" : "Off"}</span>
+              </label>
+            </div>
+            {spec.buildings.enabled && (
+              <>
+                <RangeField
+                  label="Building Z scale"
+                  value={spec.buildings.z_scale}
+                  unit="×"
+                  min={0.5}
+                  max={30}
+                  step={0.5}
+                  onChange={(value) => updateBuildings("z_scale", value)}
+                />
+                <p className="color-note">
+                  1× keeps true height against the map width. Higher values make
+                  small buildings easier to print. Tagged heights are used
+                  first, then floor count, then an 8 m default.
                 </p>
               </>
             )}
@@ -1467,14 +1539,14 @@ export function TerrainStudio() {
                   value={spec.tray.contour_count}
                   unit=""
                   min={5}
-                  max={30}
+                  max={60}
                   step={1}
                   onChange={(value) => updateTray("contour_count", value)}
                 />
                 <p className="color-note">
                   The color 3MF prints contour lines on the flat tray floor and
-                  the place name, latitude, and longitude on the front wall.
-                  The job also includes a plain STL.
+                  the place name, latitude, and longitude as raised shapes on
+                  the top front lip. The job also includes a plain STL.
                 </p>
               </>
             )}
@@ -1492,28 +1564,28 @@ export function TerrainStudio() {
               </a>
             </strong>
             {spec.color_output.enabled && (
-              <>
-                <strong>
-                  <a
-                    href="https://worldcover2021.esa.int/download"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    ESA WorldCover 2021 surface classes
-                  </a>
-                </strong>
-                {spec.color_output.roads_enabled && (
-                  <strong>
-                    <a
-                      href="https://www.openstreetmap.org/copyright"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      OpenStreetMap road and trail data
-                    </a>
-                  </strong>
-                )}
-              </>
+              <strong>
+                <a
+                  href="https://worldcover2021.esa.int/download"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  ESA WorldCover 2021 surface classes
+                </a>
+              </strong>
+            )}
+            {((spec.color_output.enabled &&
+              spec.color_output.roads_enabled) ||
+              spec.buildings.enabled) && (
+              <strong>
+                <a
+                  href="https://www.openstreetmap.org/copyright"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  OpenStreetMap route and building data
+                </a>
+              </strong>
             )}
             <p>
               The job saves source details and required notices in its manifest.

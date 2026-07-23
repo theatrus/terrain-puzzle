@@ -11,6 +11,7 @@ license = "MIT"
 anyhow = "1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+directories = "6"
 geo = "0.33"
 geotiff-reader = { version = "0.7", default-features = false, features = ["cog"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

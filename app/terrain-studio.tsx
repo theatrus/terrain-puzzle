@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
@@ -10,6 +11,8 @@ import {
   useRef,
   useState,
 } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 type GenerationSpec = {
   center_lat: number;
@@ -591,18 +594,6 @@ function puzzleEdgePoint(
   };
 }
 
-function shadeColor(color: string, factor: number) {
-  const value = color.replace("#", "");
-  if (!/^[0-9a-f]{6}$/i.test(value)) return color;
-  const channels = [0, 2, 4].map((offset) =>
-    Math.max(
-      0,
-      Math.min(255, Math.round(Number.parseInt(value.slice(offset, offset + 2), 16) * factor)),
-    ),
-  );
-  return `rgb(${channels.join(" ")})`;
-}
-
 function ReliefPreview({
   spec,
   preview,
@@ -613,31 +604,50 @@ function ReliefPreview({
   previewState: "shape" | "loading" | "elevation" | "generated";
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const renderErrorRef = useRef<HTMLParagraphElement>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const viewRef = useRef<{
+    position: [number, number, number];
+    target: [number, number, number];
+  } | null>(null);
+  const resetViewRef = useRef(false);
+  const [resetViewKey, setResetViewKey] = useState(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.scale(ratio, ratio);
-    context.clearRect(0, 0, width, height);
+    if (renderErrorRef.current) renderErrorRef.current.hidden = true;
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance",
+      });
+    } catch {
+      if (renderErrorRef.current) renderErrorRef.current.hidden = false;
+      return;
+    }
 
-    const samples = preview?.width ?? 32;
-    const points: { x: number; y: number; z: number }[][] = [];
+    const scene = new THREE.Scene();
+    const sampleWidth = preview?.width ?? 32;
+    const sampleHeight = preview?.height ?? sampleWidth;
+    const heightScale = Math.max(
+      0.12,
+      Math.min(0.48, (spec.relief_mm / spec.width_mm) * 4.2),
+    );
     const seedA = Math.sin((spec.center_lat * Math.PI) / 180) * 1.7;
     const seedB = Math.cos((spec.center_lon * Math.PI) / 180) * 1.3;
-    for (let y = 0; y < samples; y += 1) {
-      const row = [];
-      for (let x = 0; x < samples; x += 1) {
-        const u = x / (samples - 1);
-        const v = y / (samples - 1);
-        const z =
-          preview?.values[y * samples + x] ??
+    const heightValues = Array.from(
+      { length: sampleWidth * sampleHeight },
+      (_, index) => {
+        const x = index % sampleWidth;
+        const y = Math.floor(index / sampleWidth);
+        const u = x / Math.max(1, sampleWidth - 1);
+        const v = y / Math.max(1, sampleHeight - 1);
+        return (
+          preview?.values[index] ??
           (() => {
             const ridge =
               Math.sin((u * 9.2 + seedA) * 1.2) * 0.19 +
@@ -649,79 +659,191 @@ function ReliefPreview({
             const dy = v - (0.48 + seedA * 0.05);
             const peak = Math.exp(-(dx * dx * 5.5 + dy * dy * 7)) * 0.63;
             return Math.max(0.03, Math.min(1, 0.12 + ridge + folds + peak));
-          })();
-        row.push({
-          x: width * 0.5 + (u - v) * width * 0.38,
-          y:
-            height * 0.2 +
-            (u + v) * height * 0.27 -
-            z * Math.min(92, spec.relief_mm * 5),
-          z,
-        });
-      }
-      points.push(row);
-    }
+          })()
+        );
+      },
+    );
 
-    const projectedPoint = (u: number, v: number) => {
-      const sampleX = Math.max(0, Math.min(samples - 1, u * (samples - 1)));
-      const sampleY = Math.max(0, Math.min(samples - 1, v * (samples - 1)));
+    const heightAt = (u: number, v: number) => {
+      const sampleX = Math.max(
+        0,
+        Math.min(sampleWidth - 1, u * (sampleWidth - 1)),
+      );
+      const sampleY = Math.max(
+        0,
+        Math.min(sampleHeight - 1, v * (sampleHeight - 1)),
+      );
       const x0 = Math.floor(sampleX);
       const y0 = Math.floor(sampleY);
-      const x1 = Math.min(samples - 1, x0 + 1);
-      const y1 = Math.min(samples - 1, y0 + 1);
+      const x1 = Math.min(sampleWidth - 1, x0 + 1);
+      const y1 = Math.min(sampleHeight - 1, y0 + 1);
       const tx = sampleX - x0;
       const ty = sampleY - y0;
-      const blend = (key: "x" | "y" | "z") => {
-        const bottom =
-          points[y0][x0][key] * (1 - tx) + points[y0][x1][key] * tx;
-        const top =
-          points[y1][x0][key] * (1 - tx) + points[y1][x1][key] * tx;
-        return bottom * (1 - ty) + top * ty;
-      };
-      return { x: blend("x"), y: blend("y"), z: blend("z") };
+      const bottom =
+        heightValues[y0 * sampleWidth + x0] * (1 - tx) +
+        heightValues[y0 * sampleWidth + x1] * tx;
+      const top =
+        heightValues[y1 * sampleWidth + x0] * (1 - tx) +
+        heightValues[y1 * sampleWidth + x1] * tx;
+      return bottom * (1 - ty) + top * ty;
     };
 
-    for (let y = samples - 2; y >= 0; y -= 1) {
-      for (let x = 0; x < samples - 1; x += 1) {
-        const a = points[y][x];
-        const b = points[y][x + 1];
-        const c = points[y + 1][x + 1];
-        const d = points[y + 1][x];
-        const averageHeight = (a.z + b.z + c.z + d.z) / 4;
-        const shade = Math.round(46 + averageHeight * 72);
+    const palette = {
+      rock:
+        preview?.surface_palette?.rock ?? spec.color_output.rock_color,
+      forest:
+        preview?.surface_palette?.forest ?? spec.color_output.forest_color,
+      snow:
+        preview?.surface_palette?.snow ?? spec.color_output.snow_color,
+      water:
+        preview?.surface_palette?.water ?? spec.color_output.water_color,
+      road:
+        preview?.surface_palette?.road ?? spec.color_output.road_color,
+      building:
+        preview?.surface_palette?.building ?? spec.color_output.building_color,
+    };
+    const classColor = (surfaceClass?: number) =>
+      surfaceClass === 1
+        ? palette.forest
+        : surfaceClass === 2
+          ? palette.snow
+          : surfaceClass === 3
+            ? palette.water
+            : surfaceClass === 4
+              ? palette.road
+              : surfaceClass === 5
+                ? palette.building
+                : spec.color_output.enabled
+                  ? palette.rock
+                  : "#74846B";
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const normals: number[] = [];
+    const normalAt = (x: number, y: number) => {
+      const left = Math.max(0, x - 1);
+      const right = Math.min(sampleWidth - 1, x + 1);
+      const down = Math.max(0, y - 1);
+      const up = Math.min(sampleHeight - 1, y + 1);
+      const spanX = Math.max(1, right - left) / Math.max(1, sampleWidth - 1);
+      const spanY = Math.max(1, up - down) / Math.max(1, sampleHeight - 1);
+      const slopeX =
+        ((heightValues[y * sampleWidth + right] -
+          heightValues[y * sampleWidth + left]) *
+          heightScale) /
+        spanX;
+      const slopeY =
+        ((heightValues[up * sampleWidth + x] -
+          heightValues[down * sampleWidth + x]) *
+          heightScale) /
+        spanY;
+      return new THREE.Vector3(-slopeX, 1, -slopeY).normalize();
+    };
+    const addVertex = (
+      x: number,
+      y: number,
+      color: THREE.Color,
+    ) => {
+      const u = x / Math.max(1, sampleWidth - 1);
+      const v = y / Math.max(1, sampleHeight - 1);
+      positions.push(
+        u - 0.5,
+        heightValues[y * sampleWidth + x] * heightScale,
+        v - 0.5,
+      );
+      colors.push(color.r, color.g, color.b);
+      const normal = normalAt(x, y);
+      normals.push(normal.x, normal.y, normal.z);
+    };
+    for (let y = 0; y < sampleHeight - 1; y += 1) {
+      for (let x = 0; x < sampleWidth - 1; x += 1) {
         const surfaceClass = spec.color_output.enabled
-          ? preview?.surface_classes?.[y * samples + x]
+          ? preview?.surface_classes?.[y * sampleWidth + x]
           : undefined;
-        const palette = preview?.surface_palette;
-        const surfaceColor =
-          surfaceClass === 1
-            ? palette?.forest
-            : surfaceClass === 2
-              ? palette?.snow
-              : surfaceClass === 3
-                ? palette?.water
-                : surfaceClass === 4
-                  ? palette?.road
-                  : surfaceClass === 5
-                    ? palette?.building
-                    : palette?.rock;
-        context.beginPath();
-        context.moveTo(a.x, a.y);
-        context.lineTo(b.x, b.y);
-        context.lineTo(c.x, c.y);
-        context.lineTo(d.x, d.y);
-        context.closePath();
-        context.fillStyle = surfaceColor
-          ? shadeColor(surfaceColor, 0.78 + averageHeight * 0.28)
-          : `hsl(75 28% ${shade}%)`;
-        context.fill();
+        const color = new THREE.Color(classColor(surfaceClass));
+        addVertex(x, y, color);
+        addVertex(x, y + 1, color);
+        addVertex(x + 1, y, color);
+        addVertex(x + 1, y, color);
+        addVertex(x, y + 1, color);
+        addVertex(x + 1, y + 1, color);
       }
     }
 
-    context.strokeStyle = "rgba(15, 25, 23, 0.72)";
-    context.lineWidth = 1.7;
+    const terrainGeometry = new THREE.BufferGeometry();
+    terrainGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(positions, 3),
+    );
+    terrainGeometry.setAttribute(
+      "color",
+      new THREE.Float32BufferAttribute(colors, 3),
+    );
+    terrainGeometry.setAttribute(
+      "normal",
+      new THREE.Float32BufferAttribute(normals, 3),
+    );
+    const terrainMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      metalness: 0,
+      roughness: 0.86,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
+    scene.add(terrainMesh);
+
+    const baseDepth = 0.055;
+    const baseGeometry = new THREE.BoxGeometry(1, baseDepth, 1);
+    const baseMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(palette.rock).multiplyScalar(0.68),
+      metalness: 0,
+      roughness: 0.92,
+    });
+    const baseMesh = new THREE.Mesh(baseGeometry, baseMaterial);
+    baseMesh.position.y = -baseDepth / 2;
+    scene.add(baseMesh);
+
+    const lineMaterial = new THREE.LineBasicMaterial({
+      color: 0x14201d,
+      opacity: 0.72,
+      transparent: true,
+    });
+    const pointOnTerrain = (u: number, v: number) =>
+      new THREE.Vector3(
+        u - 0.5,
+        heightAt(u, v) * heightScale + 0.0025,
+        v - 0.5,
+      );
+    const perimeter = [
+      ...Array.from({ length: sampleWidth }, (_, x) =>
+        pointOnTerrain(x / Math.max(1, sampleWidth - 1), 0),
+      ),
+      ...Array.from({ length: sampleHeight - 1 }, (_, y) =>
+        pointOnTerrain(1, (y + 1) / Math.max(1, sampleHeight - 1)),
+      ),
+      ...Array.from({ length: sampleWidth - 1 }, (_, x) =>
+        pointOnTerrain(
+          (sampleWidth - 2 - x) / Math.max(1, sampleWidth - 1),
+          1,
+        ),
+      ),
+      ...Array.from({ length: sampleHeight - 2 }, (_, y) =>
+        pointOnTerrain(
+          0,
+          (sampleHeight - 2 - y) / Math.max(1, sampleHeight - 1),
+        ),
+      ),
+    ];
+    perimeter.push(perimeter[0].clone());
+    scene.add(
+      new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(perimeter),
+        lineMaterial,
+      ),
+    );
+
     const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
-    const baseDepth =
+    const puzzleTabDepth =
       Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.17;
     if (!spec.solid_model) {
       for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
@@ -730,25 +852,30 @@ function ReliefPreview({
           const end = puzzleGridPoint(spec, row + 1, edgeColumn);
           const pattern = sharedEdgePattern(1, edgeColumn, row);
           const sign = edgeSign(1, row, edgeColumn, spec.columns);
-          context.beginPath();
-          for (let step = 0; step <= 64; step += 1) {
-            const t = step / 64;
+          const points = [];
+          for (let step = 0; step <= 48; step += 1) {
+            const t = step / 48;
             const edgePoint = puzzleEdgePoint(
               start,
               end,
               pattern,
               sign,
               t,
-              baseDepth,
+              puzzleTabDepth,
             );
-            const point = projectedPoint(
-              edgePoint.x / spec.width_mm,
-              edgePoint.y / modelHeight,
+            points.push(
+              pointOnTerrain(
+                edgePoint.x / spec.width_mm,
+                edgePoint.y / modelHeight,
+              ),
             );
-            if (step === 0) context.moveTo(point.x, point.y);
-            else context.lineTo(point.x, point.y);
           }
-          context.stroke();
+          scene.add(
+            new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints(points),
+              lineMaterial,
+            ),
+          );
         }
       }
       for (let edgeRow = 1; edgeRow < spec.rows; edgeRow += 1) {
@@ -757,33 +884,174 @@ function ReliefPreview({
           const end = puzzleGridPoint(spec, edgeRow, column + 1);
           const pattern = sharedEdgePattern(0, edgeRow, column);
           const sign = edgeSign(0, column, edgeRow, spec.rows);
-          context.beginPath();
-          for (let step = 0; step <= 64; step += 1) {
-            const t = step / 64;
+          const points = [];
+          for (let step = 0; step <= 48; step += 1) {
+            const t = step / 48;
             const edgePoint = puzzleEdgePoint(
               start,
               end,
               pattern,
               sign,
               t,
-              baseDepth,
+              puzzleTabDepth,
             );
-            const point = projectedPoint(
-              edgePoint.x / spec.width_mm,
-              edgePoint.y / modelHeight,
+            points.push(
+              pointOnTerrain(
+                edgePoint.x / spec.width_mm,
+                edgePoint.y / modelHeight,
+              ),
             );
-            if (step === 0) context.moveTo(point.x, point.y);
-            else context.lineTo(point.x, point.y);
           }
-          context.stroke();
+          scene.add(
+            new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints(points),
+              lineMaterial,
+            ),
+          );
         }
       }
     }
-  }, [preview, spec]);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x39433c, 1.8));
+    const keyLight = new THREE.DirectionalLight(0xfff8df, 2.7);
+    keyLight.position.set(-1.4, 2.1, 1.5);
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xb9d8ff, 0.8);
+    fillLight.position.set(1.3, 0.7, -1);
+    scene.add(fillLight);
+
+    const camera = new THREE.PerspectiveCamera(36, 1, 0.01, 20);
+    const savedView = resetViewRef.current ? null : viewRef.current;
+    if (savedView) {
+      camera.position.fromArray(savedView.position);
+    } else {
+      camera.position.set(0.92, 0.72, 1.08);
+    }
+    const controls = new OrbitControls(camera, canvas);
+    controls.target.fromArray(
+      savedView?.target ?? [0, heightScale * 0.2, 0],
+    );
+    controls.enableDamping = false;
+    controls.enablePan = false;
+    controls.minDistance = 0.72;
+    controls.maxDistance = 3.1;
+    controls.minPolarAngle = 0.12;
+    controls.maxPolarAngle = Math.PI / 2 - 0.025;
+    controls.rotateSpeed = 0.72;
+    controls.zoomSpeed = 0.85;
+    controls.zoomToCursor = true;
+    controls.update();
+    controlsRef.current = controls;
+    canvas.dataset.cameraMoved = savedView ? "true" : "false";
+    resetViewRef.current = false;
+
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+
+    const render = () => renderer.render(scene, camera);
+    const resize = () => {
+      const width = Math.max(1, canvas.clientWidth);
+      const height = Math.max(1, canvas.clientHeight);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      render();
+    };
+    const onViewChange = () => {
+      canvas.dataset.cameraMoved = "true";
+      viewRef.current = {
+        position: camera.position.toArray(),
+        target: controls.target.toArray(),
+      };
+      render();
+    };
+    controls.addEventListener("change", onViewChange);
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    resize();
+
+    return () => {
+      if (!resetViewRef.current) {
+        viewRef.current = {
+          position: camera.position.toArray(),
+          target: controls.target.toArray(),
+        };
+      }
+      observer.disconnect();
+      controls.removeEventListener("change", onViewChange);
+      controls.dispose();
+      controlsRef.current = null;
+      scene.traverse((object) => {
+        if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
+          object.geometry.dispose();
+          const materials = Array.isArray(object.material)
+            ? object.material
+            : [object.material];
+          materials.forEach((material) => material.dispose());
+        }
+      });
+      renderer.dispose();
+    };
+  }, [preview, resetViewKey, spec]);
+
+  const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    switch (event.key) {
+      case "ArrowLeft":
+        controls.rotateLeft(Math.PI / 18);
+        break;
+      case "ArrowRight":
+        controls.rotateLeft(-Math.PI / 18);
+        break;
+      case "ArrowUp":
+        controls.rotateUp(Math.PI / 24);
+        break;
+      case "ArrowDown":
+        controls.rotateUp(-Math.PI / 24);
+        break;
+      case "+":
+      case "=":
+        controls.dollyIn(1.12);
+        break;
+      case "-":
+      case "_":
+        controls.dollyOut(1.12);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    controls.update();
+  };
 
   return (
     <div className="relief-shell">
-      <canvas ref={canvasRef} className="relief-canvas" />
+      <canvas
+        ref={canvasRef}
+        className="relief-canvas"
+        aria-label="Interactive 3D terrain preview"
+        data-camera-moved="false"
+        onKeyDown={keyboardOrbit}
+        tabIndex={0}
+      />
+      <p ref={renderErrorRef} className="preview-render-error" hidden>
+        This system could not start the 3D preview.
+      </p>
+      <div className="preview-orbit-controls" aria-label="3D preview controls">
+        <span>Drag to rotate · Scroll or pinch to zoom</span>
+        <button
+          type="button"
+          onClick={() => {
+            resetViewRef.current = true;
+            setResetViewKey((current) => current + 1);
+          }}
+        >
+          Reset view
+        </button>
+      </div>
       {spec.color_output.enabled && (
         <div className="color-legend" aria-label="Surface color legend">
           {(

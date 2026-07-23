@@ -328,10 +328,69 @@ a {
 }
 
 .relief-canvas {
+  cursor: grab;
   height: 100%;
   inset: 0;
   position: absolute;
+  touch-action: none;
   width: 100%;
+}
+
+.relief-canvas:active {
+  cursor: grabbing;
+}
+
+.relief-canvas:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: -5px;
+}
+
+.preview-orbit-controls {
+  align-items: stretch;
+  display: flex;
+  position: absolute;
+  right: 18px;
+  top: 18px;
+}
+
+.preview-orbit-controls span,
+.preview-orbit-controls button {
+  background: rgba(255, 254, 248, 0.92);
+  border: 1px solid rgba(20, 32, 29, 0.18);
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  padding: 9px 10px;
+  text-transform: uppercase;
+}
+
+.preview-orbit-controls span {
+  align-items: center;
+  display: flex;
+}
+
+.preview-orbit-controls button {
+  border-left: 0;
+  cursor: pointer;
+}
+
+.preview-orbit-controls button:hover,
+.preview-orbit-controls button:focus-visible {
+  background: var(--moss);
+  color: white;
+}
+
+.preview-render-error {
+  background: rgba(255, 254, 248, 0.94);
+  color: #9b3f32;
+  font-size: 11px;
+  left: 50%;
+  margin: 0;
+  padding: 12px 15px;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .color-legend {

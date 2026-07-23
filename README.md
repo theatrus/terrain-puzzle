@@ -81,7 +81,9 @@ before wider or commercial use.
 The preview asks for a 64×64 real elevation sample after the location or ground
 span has been still for 450 ms. This gives the relief pane useful terrain before
 a full mesh job starts. It uses the same tile cache as generation. A completed
-job replaces it with the detailed generated preview.
+job replaces it with the detailed generated preview. The preview is a lit 3D
+height mesh: drag or use the arrow keys to orbit, and scroll, pinch, or use the
+plus and minus keys to zoom.
 
 ## Requirements
 

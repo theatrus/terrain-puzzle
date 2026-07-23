@@ -39,6 +39,42 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByLabel("Find a place")).toBeVisible();
 });
 
+test("rotates, zooms, and resets the interactive 3D preview", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const preview = page.getByLabel("Interactive 3D terrain preview");
+  await expect(preview).toBeVisible();
+  await expect(
+    page.getByText("Drag to rotate · Scroll or pinch to zoom"),
+  ).toBeVisible();
+  await expect(preview).toHaveAttribute("data-camera-moved", "false");
+
+  const bounds = await preview.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  await page.mouse.move(
+    bounds.x + bounds.width * 0.68,
+    bounds.y + bounds.height * 0.62,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    bounds.x + bounds.width * 0.42,
+    bounds.y + bounds.height * 0.4,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await expect(preview).toHaveAttribute("data-camera-moved", "true");
+
+  await page.getByRole("button", { name: "Reset view" }).click();
+  await expect(preview).toHaveAttribute("data-camera-moved", "false");
+
+  await preview.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(preview).toHaveAttribute("data-camera-moved", "true");
+});
+
 test("keeps direct artifact downloads in the web app", async ({ page }) => {
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();

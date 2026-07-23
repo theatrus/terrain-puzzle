@@ -30,6 +30,11 @@
     "targets": "all",
     "category": "GraphicsAndDesign",
     "shortDescription": "TopoSaic creates printable terrain puzzles from real map data.",
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../NOTICE": "NOTICE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

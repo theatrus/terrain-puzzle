@@ -79,10 +79,11 @@ type Job = {
   spec: GenerationSpec;
 };
 
-const DEFAULT_VISUAL_HEIGHT_PERCENT = 50;
+const DEFAULT_VISUAL_HEIGHT_PERCENT = 37;
 const MIN_VISUAL_HEIGHT_PERCENT = 28;
 const MAX_VISUAL_HEIGHT_PERCENT = 76;
 const VISUAL_HEIGHT_KEYBOARD_STEP = 4;
+const WORKSPACE_RESIZER_HEIGHT_PX = 14;
 
 type PreviewData = {
   width: number;
@@ -1236,8 +1237,11 @@ export function TerrainStudio() {
 
   const setVisualHeightFromPointer = useCallback((clientY: number) => {
     const bounds = workspaceRef.current?.getBoundingClientRect();
-    if (!bounds || bounds.height === 0) return;
-    const nextPercent = ((clientY - bounds.top) / bounds.height) * 100;
+    if (!bounds || bounds.height <= WORKSPACE_RESIZER_HEIGHT_PX) return;
+    const usableHeight = bounds.height - WORKSPACE_RESIZER_HEIGHT_PX;
+    const previewHeight =
+      clientY - bounds.top - WORKSPACE_RESIZER_HEIGHT_PX / 2;
+    const nextPercent = (previewHeight / usableHeight) * 100;
     setVisualHeightPercent(
       Math.min(
         MAX_VISUAL_HEIGHT_PERCENT,
@@ -1587,7 +1591,8 @@ export function TerrainStudio() {
         ref={workspaceRef}
         style={
           {
-            "--visual-height": `${visualHeightPercent}%`,
+            "--visual-share": `${visualHeightPercent}fr`,
+            "--controls-share": `${100 - visualHeightPercent}fr`,
           } as CSSProperties
         }
       >

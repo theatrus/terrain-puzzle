@@ -145,12 +145,13 @@ a {
 }
 
 .workspace {
-  --visual-height: 50%;
+  --controls-share: 63fr;
+  --visual-share: 37fr;
   display: grid;
   grid-template-rows:
-    minmax(180px, var(--visual-height))
+    minmax(180px, var(--visual-share))
     14px
-    minmax(220px, 1fr);
+    minmax(220px, var(--controls-share));
   min-height: 0;
 }
 

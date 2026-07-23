@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use terrain_core::{GenerationSpec, SurfaceClass, SurfaceField};
+use terrain_core::{GenerationSpec, HeightField, SurfaceClass, SurfaceField};
 use tracing::warn;
 
 use crate::cache;
@@ -76,6 +76,7 @@ struct OverpassPoint {
 struct RouteCounts {
     roads: usize,
     trails: usize,
+    bridges: usize,
 }
 
 #[derive(Debug, Default)]
@@ -88,6 +89,7 @@ struct WaterCounts {
 struct RouteFeature {
     points: Vec<[f32; 2]>,
     width_scale: f32,
+    bridge_elevations_m: Option<[f32; 2]>,
 }
 
 struct WaterwayFeature {
@@ -96,7 +98,11 @@ struct WaterwayFeature {
     major: bool,
 }
 
-pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Result<SurfaceField> {
+pub fn fetch_surface_field(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    map_cache_dir: &Path,
+) -> Result<SurfaceField> {
     let samples = spec.effective_samples_per_piece();
     let width = (spec.columns * samples + 1) as usize;
     let height = (spec.rows * samples + 1) as usize;
@@ -169,19 +175,25 @@ pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Resul
         }
     }
     if spec.color_output.enabled && spec.color_output.roads_enabled {
-        match paint_roads_or_trails(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+        match paint_roads_or_trails(
+            spec,
+            height_field,
+            bounds,
+            &map_cache_dir.join("osm"),
+            &mut field,
+        ) {
             Ok(counts) if counts.roads > 0 => append_source(
                 &mut field.source,
                 format!(
-                    "prominent roads: {} OpenStreetMap ways via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                    counts.roads
+                    "prominent roads: {} OpenStreetMap ways including {} tagged bridges via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    counts.roads, counts.bridges
                 ),
             ),
             Ok(counts) => append_source(
                 &mut field.source,
                 format!(
-                    "no prominent roads found; trail fallback: {} OpenStreetMap ways via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                    counts.trails
+                    "no prominent roads found; trail fallback: {} OpenStreetMap ways including {} tagged bridges via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    counts.trails, counts.bridges
                 ),
             ),
             Err(error) => {
@@ -345,33 +357,39 @@ fn bounds_for(spec: &GenerationSpec) -> GeoBounds {
 
 fn paint_roads_or_trails(
     spec: &GenerationSpec,
+    height_field: &HeightField,
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<RouteCounts> {
     let roads = fetch_osm_ways(spec, bounds, cache_dir, "roads", PROMINENT_HIGHWAYS)?;
-    let road_count = paint_osm_ways(spec, bounds, field, roads, road_width_scale);
+    let (road_count, bridge_count) =
+        paint_osm_ways(spec, height_field, bounds, field, roads, road_width_scale);
     if road_count > 0 {
         return Ok(RouteCounts {
             roads: road_count,
             trails: 0,
+            bridges: bridge_count,
         });
     }
     let trails = fetch_osm_ways(spec, bounds, cache_dir, "trails", FALLBACK_TRAILS)?;
-    let trail_count = paint_osm_ways(spec, bounds, field, trails, trail_width_scale);
+    let (trail_count, bridge_count) =
+        paint_osm_ways(spec, height_field, bounds, field, trails, trail_width_scale);
     Ok(RouteCounts {
         roads: 0,
         trails: trail_count,
+        bridges: bridge_count,
     })
 }
 
 fn paint_osm_ways(
     spec: &GenerationSpec,
+    height_field: &HeightField,
     bounds: GeoBounds,
     field: &mut SurfaceField,
     response: OverpassResponse,
     width_scale: fn(&HashMap<String, String>) -> Option<f32>,
-) -> usize {
+) -> (usize, usize) {
     let mut features = Vec::new();
     for way in response.elements {
         if way.geometry.len() < 2 || is_tunnel(&way.tags) {
@@ -380,9 +398,19 @@ fn paint_osm_ways(
         let Some(scale) = width_scale(&way.tags) else {
             continue;
         };
+        let points = normalized_osm_points(&way, spec, bounds);
+        let bridge_elevations_m = is_bridge(&way.tags).then(|| {
+            let first = points[0];
+            let last = points[points.len() - 1];
+            [
+                height_field.elevation_m_at(first[0], first[1]),
+                height_field.elevation_m_at(last[0], last[1]),
+            ]
+        });
         features.push(RouteFeature {
-            points: normalized_osm_points(&way, spec, bounds),
+            points,
             width_scale: scale,
+            bridge_elevations_m,
         });
     }
     let density_scale = if spec.color_output.adaptive_road_widths {
@@ -391,14 +419,26 @@ fn paint_osm_ways(
         1.0
     };
     for feature in &features {
-        field.paint_polyline(
-            &feature.points,
-            spec.width_mm,
-            (spec.color_output.road_width_mm * feature.width_scale * density_scale).max(0.4),
-            SurfaceClass::Road,
-        );
+        let line_width =
+            (spec.color_output.road_width_mm * feature.width_scale * density_scale).max(0.4);
+        if let Some(elevations_m) = feature.bridge_elevations_m {
+            field.paint_bridge_polyline(&feature.points, spec.width_mm, line_width, elevations_m);
+        } else {
+            field.paint_polyline(
+                &feature.points,
+                spec.width_mm,
+                line_width,
+                SurfaceClass::Road,
+            );
+        }
     }
-    features.len()
+    (
+        features.len(),
+        features
+            .iter()
+            .filter(|feature| feature.bridge_elevations_m.is_some())
+            .count(),
+    )
 }
 
 fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 {
@@ -699,6 +739,11 @@ fn is_tunnel(tags: &HashMap<String, String>) -> bool {
         .is_some_and(|value| value != "no" && value != "false")
 }
 
+fn is_bridge(tags: &HashMap<String, String>) -> bool {
+    tags.get("bridge")
+        .is_some_and(|value| value != "no" && value != "false")
+}
+
 fn unwrap_longitude(longitude: f64, center: f64) -> f64 {
     center + normalize_longitude(longitude - center)
 }
@@ -926,6 +971,7 @@ mod tests {
         let route = || RouteFeature {
             points: vec![[0.0, 0.5], [1.0, 0.5]],
             width_scale: 1.0,
+            bridge_elevations_m: None,
         };
         assert_eq!(route_density_scale(&spec, &[route()]), 1.0);
         let dense = (0..24).map(|_| route()).collect::<Vec<_>>();
@@ -947,6 +993,59 @@ mod tests {
         let tags = |class: &str| HashMap::from([("highway".into(), class.into())]);
         assert!(trail_width_scale(&tags("track")) > trail_width_scale(&tags("path")));
         assert_eq!(trail_width_scale(&tags("primary")), None);
+    }
+
+    #[test]
+    fn identifies_tagged_bridges_without_using_layer_as_height() {
+        let tags = |key: &str, value: &str| HashMap::from([(key.into(), value.into())]);
+        assert!(is_bridge(&tags("bridge", "yes")));
+        assert!(is_bridge(&tags("bridge", "viaduct")));
+        assert!(!is_bridge(&tags("bridge", "no")));
+        assert!(!is_bridge(&tags("layer", "1")));
+    }
+
+    #[test]
+    fn carries_bridge_tags_into_route_painting() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            ..GenerationSpec::default()
+        };
+        let bounds = bounds_for(&spec);
+        let height_field =
+            HeightField::new(2, 2, vec![100.0, 100.0, 100.0, 100.0], "bridge").unwrap();
+        let mut surface = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "bridge").unwrap();
+        let response = OverpassResponse {
+            elements: vec![OverpassWay {
+                tags: HashMap::from([
+                    ("highway".into(), "primary".into()),
+                    ("bridge".into(), "yes".into()),
+                ]),
+                geometry: vec![
+                    OverpassPoint {
+                        lat: bounds.south,
+                        lon: bounds.west,
+                    },
+                    OverpassPoint {
+                        lat: bounds.north,
+                        lon: bounds.east,
+                    },
+                ],
+            }],
+            remark: None,
+        };
+        assert_eq!(
+            paint_osm_ways(
+                &spec,
+                &height_field,
+                bounds,
+                &mut surface,
+                response,
+                road_width_scale,
+            ),
+            (1, 1)
+        );
     }
 
     #[test]

@@ -445,7 +445,7 @@ fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
     update_job(state, id, "running", 40, &[], None)?;
     let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
         let phase_started = Instant::now();
-        let field = surface::fetch_surface_field(spec, &state.map_cache_dir)?;
+        let field = surface::fetch_surface_field(spec, &height_field, &state.map_cache_dir)?;
         info!(
             job_id = %id,
             phase = "surface",

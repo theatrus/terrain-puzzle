@@ -1830,9 +1830,10 @@ export function TerrainStudio() {
                   add smooth lakes, rivers, streams, and canals when enabled.
                   Routes come from OpenStreetMap. The generator uses prominent
                   roads first, then trails only when no roads cross the model.
-                  Tunnels stay hidden. Roads rise by the selected single-layer
-                  height. Snow is not live. Sides and bottoms use the rock
-                  color.
+                  Tagged bridges span between their terrain-height abutments;
+                  untagged routes follow the terrain. Tunnels stay hidden.
+                  Roads rise by the selected single-layer height. Snow is not
+                  live. Sides and bottoms use the rock color.
                 </p>
               </>
             )}

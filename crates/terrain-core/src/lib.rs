@@ -354,6 +354,8 @@ struct VectorSurfaceLine {
     model_width_mm: f32,
     model_height_mm: f32,
     class: SurfaceClass,
+    bridge_elevations_m: Option<[f32; 2]>,
+    length_mm: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +369,7 @@ struct VectorSurfaceArea {
 struct SurfaceSample {
     class: SurfaceClass,
     building_height_m: f32,
+    bridge_elevation_m: Option<f32>,
 }
 
 impl SurfaceField {
@@ -416,6 +419,35 @@ impl SurfaceField {
         line_width_mm: f32,
         class: SurfaceClass,
     ) {
+        self.paint_polyline_with_bridge(points, print_width_mm, line_width_mm, class, None);
+    }
+
+    pub fn paint_bridge_polyline(
+        &mut self,
+        points: &[[f32; 2]],
+        print_width_mm: f32,
+        line_width_mm: f32,
+        elevations_m: [f32; 2],
+    ) {
+        if elevations_m.iter().all(|value| value.is_finite()) {
+            self.paint_polyline_with_bridge(
+                points,
+                print_width_mm,
+                line_width_mm,
+                SurfaceClass::Road,
+                Some(elevations_m),
+            );
+        }
+    }
+
+    fn paint_polyline_with_bridge(
+        &mut self,
+        points: &[[f32; 2]],
+        print_width_mm: f32,
+        line_width_mm: f32,
+        class: SurfaceClass,
+        bridge_elevations_m: Option<[f32; 2]>,
+    ) {
         if points.len() < 2 {
             return;
         }
@@ -426,12 +458,18 @@ impl SurfaceField {
                 .map(|point| [point[0] * print_width_mm, point[1] * print_height_mm])
                 .collect::<Vec<_>>(),
         );
+        let length_mm = smooth_points
+            .windows(2)
+            .map(|segment| (segment[1][0] - segment[0][0]).hypot(segment[1][1] - segment[0][1]))
+            .sum();
         let line = VectorSurfaceLine {
             points_mm: smooth_points.clone(),
             width_mm: line_width_mm,
             model_width_mm: print_width_mm,
             model_height_mm: print_height_mm,
             class,
+            bridge_elevations_m,
+            length_mm,
         };
         let half_width = line_width_mm * 0.5;
         let bounds = line.points_mm.iter().fold(
@@ -678,16 +716,32 @@ impl SurfaceField {
             return SurfaceSample {
                 class: SurfaceClass::Building,
                 building_height_m,
+                bridge_elevation_m: None,
             };
         }
         let line_indices = &self.vector_line_buckets[bucket];
-        if line_indices.iter().any(|index| {
+        let mut has_road = false;
+        let mut bridge_elevation_m = None::<f32>;
+        for index in line_indices {
             let line = &self.vector_lines[*index];
-            line.class == SurfaceClass::Road && surface_line_contains(line, u, v)
-        }) {
+            if line.class != SurfaceClass::Road {
+                continue;
+            }
+            let Some((_, progress)) = surface_line_projection(line, u, v) else {
+                continue;
+            };
+            has_road = true;
+            if let Some([start, end]) = line.bridge_elevations_m {
+                let elevation = start + (end - start) * progress;
+                bridge_elevation_m =
+                    Some(bridge_elevation_m.map_or(elevation, |current| current.max(elevation)));
+            }
+        }
+        if has_road {
             return SurfaceSample {
                 class: SurfaceClass::Road,
                 building_height_m,
+                bridge_elevation_m,
             };
         }
         if let Some(class) = self.vector_area_buckets[bucket]
@@ -703,6 +757,7 @@ impl SurfaceField {
             return SurfaceSample {
                 class,
                 building_height_m,
+                bridge_elevation_m: None,
             };
         }
         if let Some(class) = self.vector_line_buckets[bucket]
@@ -716,6 +771,7 @@ impl SurfaceField {
             return SurfaceSample {
                 class,
                 building_height_m,
+                bridge_elevation_m: None,
             };
         }
         let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
@@ -723,6 +779,7 @@ impl SurfaceField {
         SurfaceSample {
             class: self.base_classes[y * self.width + x],
             building_height_m,
+            bridge_elevation_m: None,
         }
     }
 
@@ -840,15 +897,18 @@ fn smooth_surface_line(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     result
 }
 
-fn surface_line_contains(line: &VectorSurfaceLine, u: f32, v: f32) -> bool {
+fn surface_line_projection(line: &VectorSurfaceLine, u: f32, v: f32) -> Option<(f32, f32)> {
     let point = [
         u.clamp(0.0, 1.0) * line.model_width_mm,
         v.clamp(0.0, 1.0) * line.model_height_mm,
     ];
     let radius_squared = (line.width_mm * 0.5).powi(2);
-    line.points_mm.windows(2).any(|segment| {
+    let mut traversed_mm = 0.0;
+    let mut closest = None::<(f32, f32)>;
+    for segment in line.points_mm.windows(2) {
         let delta = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]];
         let length_squared = delta[0].powi(2) + delta[1].powi(2);
+        let length = length_squared.sqrt();
         let offset = [point[0] - segment[0][0], point[1] - segment[0][1]];
         let amount = if length_squared <= f32::EPSILON {
             0.0
@@ -859,8 +919,20 @@ fn surface_line_contains(line: &VectorSurfaceLine, u: f32, v: f32) -> bool {
             segment[0][0] + delta[0] * amount,
             segment[0][1] + delta[1] * amount,
         ];
-        distance_squared(point, nearest) <= radius_squared
-    })
+        let distance = distance_squared(point, nearest);
+        if closest.is_none_or(|(best, _)| distance < best) {
+            closest = Some((
+                distance,
+                (traversed_mm + length * amount) / line.length_mm.max(f32::EPSILON),
+            ));
+        }
+        traversed_mm += length;
+    }
+    closest.filter(|(distance, _)| *distance <= radius_squared)
+}
+
+fn surface_line_contains(line: &VectorSurfaceLine, u: f32, v: f32) -> bool {
+    surface_line_projection(line, u, v).is_some()
 }
 
 impl HeightField {
@@ -888,6 +960,10 @@ impl HeightField {
     }
 
     fn normalized_at(&self, u: f32, v: f32, minimum: f32, range: f32) -> f32 {
+        ((self.elevation_m_at(u, v) - minimum) / range).clamp(0.0, 1.0)
+    }
+
+    pub fn elevation_m_at(&self, u: f32, v: f32) -> f32 {
         let x = u.clamp(0.0, 1.0) * (self.width - 1) as f32;
         let y = v.clamp(0.0, 1.0) * (self.height - 1) as f32;
         let x0 = x.floor() as usize;
@@ -900,7 +976,7 @@ impl HeightField {
             |sample_x: usize, sample_y: usize| self.values_m[sample_y * self.width + sample_x];
         let bottom = sample(x0, y0) * (1.0 - tx) + sample(x1, y0) * tx;
         let top = sample(x0, y1) * (1.0 - tx) + sample(x1, y1) * tx;
-        ((bottom * (1.0 - ty) + top * ty - minimum) / range).clamp(0.0, 1.0)
+        bottom * (1.0 - ty) + top * ty
     }
 
     fn range(&self) -> (f32, f32) {
@@ -2217,6 +2293,23 @@ fn build_piece(
             .map(|sample| sample.building_height_m)
             .unwrap_or(0.0);
         let building = scaled_building_height_mm(spec, building_height_m);
+        let terrain = normalized_height(
+            height_field,
+            height_range,
+            u,
+            v,
+            spec.center_lat,
+            spec.center_lon,
+        );
+        let terrain = match (
+            surface_sample.and_then(|sample| sample.bridge_elevation_m),
+            height_range,
+        ) {
+            (Some(elevation_m), Some((minimum, span))) => {
+                terrain.max(((elevation_m - minimum) / span).clamp(0.0, 1.0))
+            }
+            _ => terrain,
+        };
         let road = surface_sample
             .filter(|sample| {
                 spec.color_output.enabled
@@ -2225,18 +2318,7 @@ fn build_piece(
             })
             .map(|_| spec.color_output.road_height_mm)
             .unwrap_or(0.0);
-        let z = spec.base_mm
-            + spec.relief_mm
-                * normalized_height(
-                    height_field,
-                    height_range,
-                    u,
-                    v,
-                    spec.center_lat,
-                    spec.center_lon,
-                )
-            + building
-            + road;
+        let z = spec.base_mm + spec.relief_mm * terrain + building + road;
         vertices.push([position.x as f32, position.y as f32, z]);
         top_has_building.push(spec.buildings.enabled && building_height_m > 0.0);
     }
@@ -2853,6 +2935,15 @@ fn build_preview(
             let surface_sample = surface_field.map(|field| field.sample(u, v));
             let terrain =
                 normalized_height(height_field, range, u, v, spec.center_lat, spec.center_lon);
+            let terrain = match (
+                surface_sample.and_then(|sample| sample.bridge_elevation_m),
+                range,
+            ) {
+                (Some(elevation_m), Some((minimum, span))) => {
+                    terrain.max(((elevation_m - minimum) / span).clamp(0.0, 1.0))
+                }
+                _ => terrain,
+            };
             let building = scaled_building_height_mm(
                 spec,
                 surface_sample
@@ -3861,6 +3952,40 @@ mod tests {
             .map(|vertex| vertex[2])
             .fold(f32::NEG_INFINITY, f32::max);
         assert!((raised_top - flat_top - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn tagged_bridge_holds_its_deck_above_a_low_crossing() {
+        let height_field = HeightField::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+            "bridge-test",
+        )
+        .unwrap();
+        let mut bridge_field =
+            SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "bridge").unwrap();
+        bridge_field.paint_bridge_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, [100.0, 100.0]);
+        let mut road_field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "road").unwrap();
+        road_field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        let bridge = build_preview(&spec, Some(&height_field), Some(&bridge_field), 3);
+        let road = build_preview(&spec, Some(&height_field), Some(&road_field), 3);
+        let bridge_center = bridge["values"][4].as_f64().unwrap();
+        let road_center = road["values"][4].as_f64().unwrap();
+        assert!(bridge_center > 1.0);
+        assert!(road_center < 0.1);
     }
 
     #[test]

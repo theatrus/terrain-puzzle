@@ -73,7 +73,10 @@ instead of a blocky whole-map sampling edge. The 3MF stores standard triangle
 color properties.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
-networks. OpenStreetMap water can be disabled without hiding WorldCover water.
+networks. Roads tagged as bridges in OpenStreetMap interpolate a deck between
+their DEM-height abutments instead of dropping into the ravine or water below.
+Untagged roads still follow the terrain, and `layer=*` is not treated as a
+height. OpenStreetMap water can be disabled without hiding WorldCover water.
 The waterway coverage cutoff always keeps rivers and canals, then keeps the
 longest streams until their estimated printed area reaches the chosen share of
 the model. Set it to 0% for major waterways only or 100% for every mapped

@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
+geotiff-reader.workspace = true
 image.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true

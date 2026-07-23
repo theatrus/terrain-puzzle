@@ -29,6 +29,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod elevation;
+mod surface;
 
 #[derive(Clone)]
 struct AppState {
@@ -394,10 +395,21 @@ async fn download(
 fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
     update_job(state, id, "running", 10, &[], None)?;
     let height_field = elevation::fetch_height_field(spec, &state.dem_cache_dir)?;
-    update_job(state, id, "running", 55, &[], None)?;
+    update_job(state, id, "running", 40, &[], None)?;
+    let surface_field = if spec.color_output.enabled {
+        let field = surface::fetch_surface_field(spec)?;
+        update_job(state, id, "running", 65, &[], None)?;
+        Some(field)
+    } else {
+        None
+    };
     let output_dir = state.jobs_dir.join(id);
-    let manifest =
-        terrain_core::generate_project_with_height_field(spec, &height_field, &output_dir)?;
+    let manifest = terrain_core::generate_project_with_fields(
+        spec,
+        &height_field,
+        surface_field.as_ref(),
+        &output_dir,
+    )?;
     update_job(state, id, "complete", 100, &manifest.artifacts, None)?;
     Ok(())
 }

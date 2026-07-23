@@ -22,6 +22,13 @@ type GenerationSpec = {
   relief_mm: number;
   clearance_mm: number;
   samples_per_piece: number;
+  color_output: {
+    enabled: boolean;
+    forest_color: string;
+    rock_color: string;
+    snow_color: string;
+    minimum_patch_mm: number;
+  };
 };
 
 type Artifact = {
@@ -44,6 +51,18 @@ type PreviewData = {
   values: number[];
   rows: number;
   columns: number;
+  surface_classes?: number[];
+  surface_palette?: {
+    rock: string;
+    forest: string;
+    snow: string;
+  };
+  surface_coverage?: {
+    rock: number;
+    forest: number;
+    snow: number;
+  };
+  surface_source?: string;
 };
 
 type PlaceResult = {
@@ -68,6 +87,13 @@ const initialSpec: GenerationSpec = {
   relief_mm: 14,
   clearance_mm: 0.14,
   samples_per_piece: 64,
+  color_output: {
+    enabled: true,
+    forest_color: "#28543A",
+    rock_color: "#7C7468",
+    snow_color: "#F4F3EC",
+    minimum_patch_mm: 1.2,
+  },
 };
 
 const TILE_SIZE = 256;
@@ -457,6 +483,18 @@ function puzzleEdgePoint(
   };
 }
 
+function shadeColor(color: string, factor: number) {
+  const value = color.replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(value)) return color;
+  const channels = [0, 2, 4].map((offset) =>
+    Math.max(
+      0,
+      Math.min(255, Math.round(Number.parseInt(value.slice(offset, offset + 2), 16) * factor)),
+    ),
+  );
+  return `rgb(${channels.join(" ")})`;
+}
+
 function ReliefPreview({
   spec,
   preview,
@@ -539,14 +577,27 @@ function ReliefPreview({
         const b = points[y][x + 1];
         const c = points[y + 1][x + 1];
         const d = points[y + 1][x];
-        const shade = Math.round(46 + ((a.z + b.z + c.z + d.z) / 4) * 72);
+        const averageHeight = (a.z + b.z + c.z + d.z) / 4;
+        const shade = Math.round(46 + averageHeight * 72);
+        const surfaceClass = spec.color_output.enabled
+          ? preview?.surface_classes?.[y * samples + x]
+          : undefined;
+        const palette = preview?.surface_palette;
+        const surfaceColor =
+          surfaceClass === 1
+            ? palette?.forest
+            : surfaceClass === 2
+              ? palette?.snow
+              : palette?.rock;
         context.beginPath();
         context.moveTo(a.x, a.y);
         context.lineTo(b.x, b.y);
         context.lineTo(c.x, c.y);
         context.lineTo(d.x, d.y);
         context.closePath();
-        context.fillStyle = `hsl(75 28% ${shade}%)`;
+        context.fillStyle = surfaceColor
+          ? shadeColor(surfaceColor, 0.78 + averageHeight * 0.28)
+          : `hsl(75 28% ${shade}%)`;
         context.fill();
       }
     }
@@ -615,6 +666,29 @@ function ReliefPreview({
   return (
     <div className="relief-shell">
       <canvas ref={canvasRef} className="relief-canvas" />
+      {spec.color_output.enabled && (
+        <div className="color-legend" aria-label="Surface color legend">
+          {(
+            [
+              ["Forest", "forest", spec.color_output.forest_color],
+              ["Rock", "rock", spec.color_output.rock_color],
+              ["Snow", "snow", spec.color_output.snow_color],
+            ] as const
+          ).map(([label, key, color]) => (
+            <span key={key}>
+              <i
+                style={{
+                  background: preview?.surface_palette?.[key] ?? color,
+                }}
+              />
+              {label}
+              {preview?.surface_coverage && (
+                <small>{preview.surface_coverage[key].toFixed(0)}%</small>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="preview-label">
         <span>
           {preview ? "Generated terrain" : "Fast shape preview"} ·{" "}
@@ -680,6 +754,17 @@ export function TerrainStudio() {
   const update = useCallback(
     <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) =>
       setSpec((current) => ({ ...current, [key]: value })),
+    [],
+  );
+  const updateColor = useCallback(
+    <Key extends keyof GenerationSpec["color_output"]>(
+      key: Key,
+      value: GenerationSpec["color_output"][Key],
+    ) =>
+      setSpec((current) => ({
+        ...current,
+        color_output: { ...current.color_output, [key]: value },
+      })),
     [],
   );
 
@@ -789,10 +874,12 @@ export function TerrainStudio() {
     if (job.status === "complete") return "Your print files are ready.";
     if (job.status === "failed") return job.error ?? "Generation failed.";
     if (job.status === "queued") return "Waiting for the generator…";
-    return job.progress < 55
-      ? "Sampling global elevation…"
-      : "Building watertight pieces…";
-  }, [job]);
+    if (job.progress < 40) return "Sampling global elevation…";
+    if (job.progress < 65 && spec.color_output.enabled) {
+      return "Mapping forest, rock, and snow…";
+    }
+    return "Building watertight pieces…";
+  }, [job, spec.color_output.enabled]);
 
   return (
     <main className="studio">
@@ -967,6 +1054,61 @@ export function TerrainStudio() {
             onChange={(value) => update("clearance_mm", value)}
           />
 
+          <fieldset className="color-controls" aria-label="Surface colors">
+            <div className="color-heading">
+              <div>
+                <strong className="color-title">Surface colors</strong>
+                <p>Paint the 3MF from mapped 2021 land cover.</p>
+              </div>
+              <label className="color-toggle">
+                <input
+                  type="checkbox"
+                  checked={spec.color_output.enabled}
+                  onChange={(event) =>
+                    updateColor("enabled", event.target.checked)
+                  }
+                />
+                <span>{spec.color_output.enabled ? "On" : "Off"}</span>
+              </label>
+            </div>
+            {spec.color_output.enabled && (
+              <>
+                <div className="color-swatches">
+                  {(
+                    [
+                      ["Forest", "forest_color"],
+                      ["Rock", "rock_color"],
+                      ["Snow", "snow_color"],
+                    ] as const
+                  ).map(([label, key]) => (
+                    <label key={key}>
+                      <input
+                        type="color"
+                        value={spec.color_output[key]}
+                        onChange={(event) => updateColor(key, event.target.value)}
+                      />
+                      <span>{label}</span>
+                      <code>{spec.color_output[key].toUpperCase()}</code>
+                    </label>
+                  ))}
+                </div>
+                <RangeField
+                  label="Smallest color patch"
+                  value={spec.color_output.minimum_patch_mm}
+                  unit=" mm"
+                  min={0.4}
+                  max={4}
+                  step={0.2}
+                  onChange={(value) => updateColor("minimum_patch_mm", value)}
+                />
+                <p className="color-note">
+                  Snow shows mapped permanent snow and ice, not today&apos;s
+                  snow line. Sides and bottoms use the rock color.
+                </p>
+              </>
+            )}
+          </fieldset>
+
           <fieldset className="piece-grid">
             <legend>Piece layout</legend>
             {[2, 3, 4, 5].map((count) => (
@@ -1010,6 +1152,17 @@ export function TerrainStudio() {
                 Global Mapzen elevation tiles
               </a>
             </strong>
+            {spec.color_output.enabled && (
+              <strong>
+                <a
+                  href="https://worldcover2021.esa.int/download"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  ESA WorldCover 2021 surface classes
+                </a>
+              </strong>
+            )}
             <p>
               The job saves source details and required notices in its manifest.
             </p>

@@ -328,6 +328,40 @@ a {
   width: 100%;
 }
 
+.color-legend {
+  background: rgba(255, 254, 248, 0.9);
+  border: 1px solid rgba(20, 32, 29, 0.12);
+  display: grid;
+  gap: 7px;
+  left: 18px;
+  padding: 10px 12px;
+  position: absolute;
+  top: 18px;
+}
+
+.color-legend > span {
+  align-items: center;
+  display: grid;
+  font-size: 9px;
+  font-weight: 720;
+  gap: 7px;
+  grid-template-columns: 12px 42px 28px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.color-legend i {
+  border: 1px solid rgba(20, 32, 29, 0.24);
+  height: 12px;
+  width: 12px;
+}
+
+.color-legend small {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
+}
+
 .preview-label {
   align-items: flex-end;
   bottom: 22px;
@@ -556,6 +590,87 @@ a {
   display: block;
   margin: 11px 0 0;
   width: 100%;
+}
+
+.color-controls {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 25px 0 0;
+  padding: 20px 0 0;
+}
+
+.color-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.color-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 660;
+}
+
+.color-heading p,
+.color-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 4px 0 0;
+}
+
+.color-toggle {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 7px;
+}
+
+.color-toggle input {
+  accent-color: var(--moss);
+}
+
+.color-toggle span {
+  font-size: 10px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.color-swatches {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 15px;
+}
+
+.color-swatches label {
+  align-items: center;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  display: grid;
+  gap: 2px 8px;
+  grid-template-columns: 27px 1fr;
+  padding: 8px;
+}
+
+.color-swatches input {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  grid-row: 1 / 3;
+  height: 27px;
+  padding: 0;
+  width: 27px;
+}
+
+.color-swatches span {
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.color-swatches code {
+  color: var(--muted);
+  font-size: 8px;
 }
 
 .piece-grid {

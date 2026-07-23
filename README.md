@@ -3,10 +3,16 @@
 Terrain Puzzle is a local-first topographic puzzle generator. A Rust service
 samples worldwide elevation data, builds watertight pieces with round jigsaw
 tabs and sockets, and stores job state in SQLite. The web app lets you choose a
-place and tune the printable model, including the mesh detail.
+place and tune the printable model, including the mesh detail and surface
+colors.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry and keeps a local tile cache under `data/dem-cache`.
+
+Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
+maps tree cover, bare ground, and snow or ice to editable forest, rock, and snow
+colors. The 3MF stores standard triangle color properties. STL files stay
+single-color.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests
@@ -58,11 +64,11 @@ npm test
 - `crates/terrain-core`: puzzle edges, terrain surface, watertight meshes,
   binary STL, and standards-based 3MF
 - `apps/api`: global elevation provider, Axum API, SQLite jobs, background
-  generation, and downloads
-- `app`: WebGL-free map, relief preview, print controls, and job downloads
+  generation, ESA WorldCover sampling, and downloads
+- `app`: WebGL-free map, color relief preview, print controls, and job downloads
 
-See [the color output plan](docs/color-output-plan.md) for the proposed
-rock–forest–snow 3MF workflow.
+See [the color output plan](docs/color-output-plan.md) for the design and print
+checks behind the rock–forest–snow 3MF workflow.
 
 ## Terrain data
 
@@ -71,3 +77,7 @@ sources. Generated manifests record the source and link to the required
 attribution notices:
 
 <https://github.com/tilezen/joerd/blob/master/docs/attribution.md>
+
+Color manifests also record the ESA WorldCover tile and attribution:
+
+<https://worldcover2021.esa.int/download>

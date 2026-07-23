@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -24,6 +24,7 @@ pub struct GenerationSpec {
     pub relief_mm: f32,
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
+    pub color_output: ColorOutputSpec,
 }
 
 impl Default for GenerationSpec {
@@ -39,6 +40,7 @@ impl Default for GenerationSpec {
             relief_mm: 14.0,
             clearance_mm: 0.14,
             samples_per_piece: 64,
+            color_output: ColorOutputSpec::default(),
         }
     }
 }
@@ -72,11 +74,76 @@ impl GenerationSpec {
         if !(16..=160).contains(&self.samples_per_piece) {
             bail!("samples per piece must be between 16 and 160");
         }
+        self.color_output.validate()?;
         Ok(())
     }
 
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorOutputSpec {
+    pub enabled: bool,
+    pub forest_color: String,
+    pub rock_color: String,
+    pub snow_color: String,
+    pub minimum_patch_mm: f32,
+}
+
+impl Default for ColorOutputSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            forest_color: "#28543A".into(),
+            rock_color: "#7C7468".into(),
+            snow_color: "#F4F3EC".into(),
+            minimum_patch_mm: 1.2,
+        }
+    }
+}
+
+impl ColorOutputSpec {
+    fn validate(&self) -> Result<()> {
+        for (name, color) in [
+            ("forest", &self.forest_color),
+            ("rock", &self.rock_color),
+            ("snow", &self.snow_color),
+        ] {
+            if !valid_hex_color(color) {
+                bail!("{name} color must use #RRGGBB");
+            }
+        }
+        if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
+            bail!("minimum color patch must be between 0.4 and 8 mm");
+        }
+        Ok(())
+    }
+}
+
+fn valid_hex_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceClass {
+    Rock,
+    Forest,
+    Snow,
+}
+
+impl SurfaceClass {
+    fn material_index(self) -> u32 {
+        match self {
+            Self::Rock => 0,
+            Self::Forest => 1,
+            Self::Snow => 2,
+        }
     }
 }
 
@@ -91,6 +158,7 @@ pub struct Artifact {
 pub struct ProjectManifest {
     pub generator: String,
     pub terrain_source: String,
+    pub surface_source: Option<String>,
     pub spec: GenerationSpec,
     pub artifacts: Vec<Artifact>,
 }
@@ -101,6 +169,116 @@ pub struct HeightField {
     pub height: usize,
     pub values_m: Vec<f32>,
     pub source: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceField {
+    pub width: usize,
+    pub height: usize,
+    pub classes: Vec<SurfaceClass>,
+    pub source: String,
+}
+
+impl SurfaceField {
+    pub fn new(
+        width: usize,
+        height: usize,
+        classes: Vec<SurfaceClass>,
+        source: impl Into<String>,
+    ) -> Result<Self> {
+        if width < 2 || height < 2 {
+            bail!("surface field must be at least 2 by 2");
+        }
+        if classes.len() != width * height {
+            bail!("surface field dimensions do not match its values");
+        }
+        Ok(Self {
+            width,
+            height,
+            classes,
+            source: source.into(),
+        })
+    }
+
+    pub fn filter_small_patches(&mut self, print_width_mm: f32, minimum_patch_mm: f32) {
+        let cells_across =
+            minimum_patch_mm / print_width_mm.max(f32::EPSILON) * (self.width - 1) as f32;
+        let minimum_cells = (std::f32::consts::PI * (cells_across * 0.5).powi(2))
+            .ceil()
+            .max(2.0) as usize;
+        for _ in 0..2 {
+            self.filter_components_smaller_than(minimum_cells);
+        }
+    }
+
+    fn filter_components_smaller_than(&mut self, minimum_cells: usize) {
+        let original = self.classes.clone();
+        let mut visited = vec![false; original.len()];
+        for start in 0..original.len() {
+            if visited[start] {
+                continue;
+            }
+            let class = original[start];
+            let mut queue = VecDeque::from([start]);
+            let mut component = Vec::new();
+            let mut neighbours = [0_usize; 3];
+            visited[start] = true;
+            while let Some(index) = queue.pop_front() {
+                component.push(index);
+                let x = index % self.width;
+                let y = index / self.width;
+                for neighbour in [
+                    x.checked_sub(1).map(|value| y * self.width + value),
+                    (x + 1 < self.width).then_some(y * self.width + x + 1),
+                    y.checked_sub(1).map(|value| value * self.width + x),
+                    (y + 1 < self.height).then_some((y + 1) * self.width + x),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let neighbour_class = original[neighbour];
+                    if neighbour_class == class {
+                        if !visited[neighbour] {
+                            visited[neighbour] = true;
+                            queue.push_back(neighbour);
+                        }
+                    } else {
+                        neighbours[neighbour_class.material_index() as usize] += 1;
+                    }
+                }
+            }
+            if component.len() < minimum_cells {
+                let replacement = neighbours
+                    .into_iter()
+                    .enumerate()
+                    .max_by_key(|(index, count)| (*count, usize::MAX - *index))
+                    .map(|(index, _)| match index {
+                        1 => SurfaceClass::Forest,
+                        2 => SurfaceClass::Snow,
+                        _ => SurfaceClass::Rock,
+                    })
+                    .unwrap_or(SurfaceClass::Rock);
+                for index in component {
+                    self.classes[index] = replacement;
+                }
+            }
+        }
+    }
+
+    fn at(&self, u: f32, v: f32) -> SurfaceClass {
+        let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
+        self.classes[y * self.width + x]
+    }
+
+    fn coverage(&self) -> [f32; 3] {
+        let mut counts = [0_usize; 3];
+        for class in &self.classes {
+            counts[class.material_index() as usize] += 1;
+        }
+        let total = self.classes.len() as f32;
+        counts.map(|count| count as f32 * 100.0 / total)
+    }
 }
 
 impl HeightField {
@@ -159,10 +337,11 @@ struct Mesh {
     name: String,
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
+    materials: Vec<SurfaceClass>,
 }
 
 pub fn generate_project(spec: &GenerationSpec, output_dir: &Path) -> Result<ProjectManifest> {
-    generate_project_inner(spec, None, output_dir)
+    generate_project_inner(spec, None, None, output_dir)
 }
 
 pub fn generate_project_with_height_field(
@@ -170,22 +349,35 @@ pub fn generate_project_with_height_field(
     height_field: &HeightField,
     output_dir: &Path,
 ) -> Result<ProjectManifest> {
-    generate_project_inner(spec, Some(height_field), output_dir)
+    generate_project_inner(spec, Some(height_field), None, output_dir)
+}
+
+pub fn generate_project_with_fields(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    surface_field: Option<&SurfaceField>,
+    output_dir: &Path,
+) -> Result<ProjectManifest> {
+    generate_project_inner(spec, Some(height_field), surface_field, output_dir)
 }
 
 fn generate_project_inner(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
+    surface_field: Option<&SurfaceField>,
     output_dir: &Path,
 ) -> Result<ProjectManifest> {
     spec.validate()?;
+    if spec.color_output.enabled && surface_field.is_none() {
+        bail!("color output requires ESA WorldCover surface data");
+    }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
 
     let mut meshes = Vec::with_capacity((spec.rows * spec.columns) as usize);
     for row in 0..spec.rows {
         for column in 0..spec.columns {
-            meshes.push(build_piece(spec, height_field, row, column)?);
+            meshes.push(build_piece(spec, height_field, surface_field, row, column)?);
         }
     }
 
@@ -206,7 +398,7 @@ fn generate_project_inner(
     let preview_path = output_dir.join("preview.json");
     let preview_size =
         (spec.rows.max(spec.columns) * spec.samples_per_piece + 1).clamp(96, 160) as usize;
-    let preview = build_preview(spec, height_field, preview_size);
+    let preview = build_preview(spec, height_field, surface_field, preview_size);
     fs::write(&preview_path, serde_json::to_vec(&preview)?)
         .with_context(|| format!("write {}", preview_path.display()))?;
     artifacts.push(file_artifact(&preview_path, "application/json")?);
@@ -216,6 +408,7 @@ fn generate_project_inner(
         terrain_source: height_field
             .map(|field| field.source.clone())
             .unwrap_or_else(|| "deterministic-preview-surface".into()),
+        surface_source: surface_field.map(|field| field.source.clone()),
         spec: spec.clone(),
         artifacts,
     };
@@ -233,6 +426,7 @@ fn generate_project_inner(
 fn build_piece(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
+    surface_field: Option<&SurfaceField>,
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
@@ -314,6 +508,7 @@ fn build_piece(
     }
 
     let mut top_triangles = Vec::with_capacity(triangulation.num_inner_faces());
+    let mut top_materials = Vec::with_capacity(triangulation.num_inner_faces());
     for face in triangulation.inner_faces() {
         let face_vertices = face.vertices();
         let positions = face_vertices.map(|vertex| vertex.position());
@@ -331,6 +526,16 @@ fn build_piece(
             top.swap(1, 2);
         }
         top_triangles.push(top);
+        top_materials.push(
+            surface_field
+                .map(|field| {
+                    field.at(
+                        (centroid[0] + origin_x) / assembled_width,
+                        (centroid[1] + origin_y) / assembled_height,
+                    )
+                })
+                .unwrap_or(SurfaceClass::Rock),
+        );
     }
 
     let mut edge_uses = HashMap::<(u32, u32), (u32, [u32; 2])>::new();
@@ -351,23 +556,29 @@ fn build_piece(
     }
 
     let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
-    for top in top_triangles {
+    let mut materials = Vec::with_capacity(triangles.capacity());
+    for (top, material) in top_triangles.into_iter().zip(top_materials) {
         triangles.push(top);
+        materials.push(material);
         triangles.push([
             top[0] + top_count as u32,
             top[2] + top_count as u32,
             top[1] + top_count as u32,
         ]);
+        materials.push(SurfaceClass::Rock);
     }
     for (_, [from, to]) in edge_uses.into_values().filter(|(uses, _)| *uses == 1) {
         triangles.push([from, to + top_count as u32, to]);
+        materials.push(SurfaceClass::Rock);
         triangles.push([from, from + top_count as u32, to + top_count as u32]);
+        materials.push(SurfaceClass::Rock);
     }
 
     Ok(Mesh {
         name: format!("Piece {}-{}", row + 1, column + 1),
         vertices,
         triangles,
+        materials,
     })
 }
 
@@ -674,29 +885,52 @@ fn normalized_height(
 fn build_preview(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
+    surface_field: Option<&SurfaceField>,
     size: usize,
 ) -> serde_json::Value {
     let mut heights = Vec::with_capacity(size * size);
+    let mut surface_classes = surface_field.map(|_| Vec::with_capacity(size * size));
     let range = height_field.map(HeightField::range);
     for y in 0..size {
         for x in 0..size {
+            let u = x as f32 / (size - 1) as f32;
+            let v = y as f32 / (size - 1) as f32;
             heights.push(normalized_height(
                 height_field,
                 range,
-                x as f32 / (size - 1) as f32,
-                y as f32 / (size - 1) as f32,
+                u,
+                v,
                 spec.center_lat,
                 spec.center_lon,
             ));
+            if let (Some(field), Some(classes)) = (surface_field, surface_classes.as_mut()) {
+                classes.push(field.at(u, v).material_index());
+            }
         }
     }
-    serde_json::json!({
+    let mut preview = serde_json::json!({
         "width": size,
         "height": size,
         "values": heights,
         "rows": spec.rows,
         "columns": spec.columns,
-    })
+    });
+    if let (Some(field), Some(classes)) = (surface_field, surface_classes) {
+        let coverage = field.coverage();
+        preview["surface_classes"] = serde_json::json!(classes);
+        preview["surface_palette"] = serde_json::json!({
+            "rock": spec.color_output.rock_color,
+            "forest": spec.color_output.forest_color,
+            "snow": spec.color_output.snow_color,
+        });
+        preview["surface_coverage"] = serde_json::json!({
+            "rock": coverage[0],
+            "forest": coverage[1],
+            "snow": coverage[2],
+        });
+        preview["surface_source"] = serde_json::json!(field.source);
+    }
+    preview
 }
 
 fn write_binary_stl(mesh: &Mesh, path: &Path) -> Result<()> {
@@ -761,16 +995,37 @@ fn write_3mf(spec: &GenerationSpec, meshes: &[Mesh], path: &Path) -> Result<()> 
 </Relationships>"#,
     )?;
 
-    let mut model = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    let mut model = if spec.color_output.enabled {
+        String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="m">
+  <metadata name="Title">Terrain Puzzle</metadata>
+  <metadata name="Designer">Terrain Puzzle Generator</metadata>
+  <resources>
+"#,
+        )
+    } else {
+        String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
   <metadata name="Title">Terrain Puzzle</metadata>
   <metadata name="Designer">Terrain Puzzle Generator</metadata>
   <resources>
 "#,
-    );
+        )
+    };
+    const COLOR_GROUP_ID: u32 = 1000;
+    if spec.color_output.enabled {
+        model.push_str(&format!(
+            "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>\n",
+            spec.color_output.rock_color,
+            spec.color_output.forest_color,
+            spec.color_output.snow_color,
+        ));
+    }
 
     for (index, mesh) in meshes.iter().enumerate() {
+        debug_assert_eq!(mesh.triangles.len(), mesh.materials.len());
         model.push_str(&format!(
             "    <object id=\"{}\" name=\"{}\" type=\"model\"><mesh><vertices>\n",
             index + 1,
@@ -783,11 +1038,19 @@ fn write_3mf(spec: &GenerationSpec, meshes: &[Mesh], path: &Path) -> Result<()> 
             ));
         }
         model.push_str("    </vertices><triangles>\n");
-        for triangle in &mesh.triangles {
-            model.push_str(&format!(
-                "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
-                triangle[0], triangle[1], triangle[2]
-            ));
+        for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
+            if spec.color_output.enabled {
+                let index = material.material_index();
+                model.push_str(&format!(
+                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\"/>\n",
+                    triangle[0], triangle[1], triangle[2],
+                ));
+            } else {
+                model.push_str(&format!(
+                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
+                    triangle[0], triangle[1], triangle[2]
+                ));
+            }
         }
         model.push_str("    </triangles></mesh></object>\n");
     }
@@ -841,7 +1104,7 @@ pub fn artifact_path(output_dir: &Path, name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, io::Read};
 
     #[test]
     fn shared_edges_are_identical_before_clearance() {
@@ -881,7 +1144,7 @@ mod tests {
 
     #[test]
     fn generated_piece_is_watertight() {
-        let mesh = build_piece(&GenerationSpec::default(), None, 0, 0).unwrap();
+        let mesh = build_piece(&GenerationSpec::default(), None, None, 0, 0).unwrap();
         let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
         for triangle in &mesh.triangles {
             for edge in [
@@ -937,6 +1200,79 @@ mod tests {
     }
 
     #[test]
+    fn color_project_writes_standard_3mf_properties_and_preview() {
+        let output_dir =
+            std::env::temp_dir().join(format!("terrain-puzzle-color-test-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height =
+            HeightField::new(5, 5, (0..25).map(|value| value as f32).collect(), "test").unwrap();
+        let surface = SurfaceField::new(
+            5,
+            5,
+            (0..25)
+                .map(|index| match index % 3 {
+                    1 => SurfaceClass::Forest,
+                    2 => SurfaceClass::Snow,
+                    _ => SurfaceClass::Rock,
+                })
+                .collect(),
+            "test surface",
+        )
+        .unwrap();
+
+        generate_project_with_fields(&spec, &height, Some(&surface), &output_dir).unwrap();
+
+        let file = File::open(output_dir.join("terrain-puzzle.3mf")).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut model = String::new();
+        archive
+            .by_name("3D/3dmodel.model")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        assert!(
+            model.contains(
+                "xmlns:m=\"http://schemas.microsoft.com/3dmanufacturing/material/2015/02\""
+            )
+        );
+        assert!(model.contains("<m:colorgroup id=\"1000\">"));
+        assert!(model.contains("color=\"#28543AFF\""));
+        assert!(model.contains("pid=\"1000\""));
+        assert!(model.contains("p1=\"1\""));
+        assert!(model.contains("p1=\"2\""));
+
+        let preview: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(output_dir.join("preview.json")).unwrap())
+                .unwrap();
+        assert!(preview["surface_classes"].is_array());
+        assert_eq!(preview["surface_palette"]["rock"], "#7C7468");
+        assert_eq!(preview["surface_source"], "test surface");
+
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn surface_filter_removes_tiny_color_islands() {
+        let mut classes = vec![SurfaceClass::Forest; 25];
+        classes[12] = SurfaceClass::Snow;
+        let mut field = SurfaceField::new(5, 5, classes, "test").unwrap();
+        field.filter_small_patches(10.0, 4.0);
+        assert_eq!(field.classes[12], SurfaceClass::Forest);
+    }
+
+    #[test]
     fn jigsaw_edge_has_overhanging_round_head() {
         let pattern = shared_edge_pattern(0, 1, 0);
         assert_eq!(jigsaw_edge(0.1, pattern)[1], 0.0);
@@ -969,7 +1305,7 @@ mod tests {
             };
             for row in 0..spec.rows {
                 for column in 0..spec.columns {
-                    build_piece(&spec, None, row, column).unwrap_or_else(|error| {
+                    build_piece(&spec, None, None, row, column).unwrap_or_else(|error| {
                         panic!("detail {samples_per_piece}, piece {row}-{column} failed: {error}")
                     });
                 }

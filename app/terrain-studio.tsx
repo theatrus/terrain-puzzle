@@ -23,6 +23,18 @@ type GenerationSpec = {
   clearance_mm: number;
   samples_per_piece: number;
   solid_model: boolean;
+  place_name: string;
+  tray: {
+    enabled: boolean;
+    tray_color: string;
+    contour_color: string;
+    label_color: string;
+    clearance_mm: number;
+    rim_width_mm: number;
+    floor_mm: number;
+    rim_height_mm: number;
+    contour_count: number;
+  };
   color_output: {
     enabled: boolean;
     forest_color: string;
@@ -99,6 +111,18 @@ const initialSpec: GenerationSpec = {
   clearance_mm: 0.14,
   samples_per_piece: 64,
   solid_model: false,
+  place_name: "Mount Rainier",
+  tray: {
+    enabled: true,
+    tray_color: "#252822",
+    contour_color: "#E7E4D8",
+    label_color: "#F4F3EC",
+    clearance_mm: 0.6,
+    rim_width_mm: 8,
+    floor_mm: 1.6,
+    rim_height_mm: 3.2,
+    contour_count: 12,
+  },
   color_output: {
     enabled: true,
     forest_color: "#28543A",
@@ -842,6 +866,19 @@ export function TerrainStudio() {
     },
     [],
   );
+  const updateTray = useCallback(
+    <Key extends keyof GenerationSpec["tray"]>(
+      key: Key,
+      value: GenerationSpec["tray"][Key],
+    ) => {
+      setPreview(null);
+      setSpec((current) => ({
+        ...current,
+        tray: { ...current.tray, [key]: value },
+      }));
+    },
+    [],
+  );
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
     setPreview(null);
@@ -887,6 +924,7 @@ export function TerrainStudio() {
   const choosePlace = (place: PlaceResult) => {
     onCenterChange(place.longitude, place.latitude);
     setPlaceQuery(place.display_name);
+    update("place_name", place.display_name.split(",")[0].trim().slice(0, 48));
     setPlaceResults([]);
     setPlaceMessage(`Map moved to ${place.display_name.split(",")[0]}.`);
     setPreview(null);
@@ -1087,6 +1125,17 @@ export function TerrainStudio() {
               />
             </label>
           </div>
+          <label className="place-label-field">
+            Tray place label
+            <input
+              type="text"
+              maxLength={48}
+              required
+              value={spec.place_name}
+              onChange={(event) => update("place_name", event.target.value)}
+            />
+            <small>The tray adds the coordinates after this name.</small>
+          </label>
 
           <RangeField
             label="Ground span"
@@ -1334,6 +1383,103 @@ export function TerrainStudio() {
             </fieldset>
           )}
 
+          <fieldset
+            className="color-controls tray-controls"
+            aria-label="Shallow terrain tray"
+          >
+            <div className="color-heading">
+              <div>
+                <strong className="color-title">Shallow terrain tray</strong>
+                <p>A fitted base for the terrain or puzzle pieces.</p>
+              </div>
+              <label className="color-toggle">
+                <input
+                  type="checkbox"
+                  checked={spec.tray.enabled}
+                  onChange={(event) =>
+                    updateTray("enabled", event.target.checked)
+                  }
+                />
+                <span>{spec.tray.enabled ? "On" : "Off"}</span>
+              </label>
+            </div>
+            {spec.tray.enabled && (
+              <>
+                <div className="color-swatches">
+                  {(
+                    [
+                      ["Tray", "tray_color"],
+                      ["Contours", "contour_color"],
+                      ["Label", "label_color"],
+                    ] as const
+                  ).map(([label, key]) => (
+                    <label key={key}>
+                      <input
+                        type="color"
+                        value={spec.tray[key]}
+                        onChange={(event) =>
+                          updateTray(key, event.target.value)
+                        }
+                      />
+                      <span>{label}</span>
+                      <code>{String(spec.tray[key]).toUpperCase()}</code>
+                    </label>
+                  ))}
+                </div>
+                <RangeField
+                  label="Tray clearance"
+                  value={spec.tray.clearance_mm}
+                  unit=" mm"
+                  min={0.2}
+                  max={2}
+                  step={0.1}
+                  onChange={(value) => updateTray("clearance_mm", value)}
+                />
+                <RangeField
+                  label="Rim width"
+                  value={spec.tray.rim_width_mm}
+                  unit=" mm"
+                  min={5}
+                  max={16}
+                  step={0.5}
+                  onChange={(value) => updateTray("rim_width_mm", value)}
+                />
+                <RangeField
+                  label="Floor thickness"
+                  value={spec.tray.floor_mm}
+                  unit=" mm"
+                  min={1}
+                  max={4}
+                  step={0.2}
+                  onChange={(value) => updateTray("floor_mm", value)}
+                />
+                <RangeField
+                  label="Rim height above floor"
+                  value={spec.tray.rim_height_mm}
+                  unit=" mm"
+                  min={2}
+                  max={8}
+                  step={0.2}
+                  onChange={(value) => updateTray("rim_height_mm", value)}
+                />
+                <RangeField
+                  label="Contour lines"
+                  value={spec.tray.contour_count}
+                  unit=""
+                  min={5}
+                  max={30}
+                  step={1}
+                  onChange={(value) => updateTray("contour_count", value)}
+                />
+                <p className="color-note">
+                  The color 3MF prints contour lines on the flat tray floor and
+                  the place name, latitude, and longitude on the front wall.
+                  The job also includes a plain STL.
+                </p>
+              </>
+            )}
+          </fieldset>
+
           <div className="engine-note">
             <span>Print source</span>
             <strong>
@@ -1413,11 +1559,7 @@ export function TerrainStudio() {
                       </a>
                     ))}
                   <details>
-                    <summary>
-                      {job.spec.solid_model
-                        ? "Solid terrain STL"
-                        : "Separate STL pieces"}
-                    </summary>
+                    <summary>STL models</summary>
                     <div>
                       {job.artifacts
                         .filter((artifact) => artifact.name.endsWith(".stl"))

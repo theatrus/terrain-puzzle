@@ -25,6 +25,8 @@ pub struct GenerationSpec {
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
     pub solid_model: bool,
+    pub place_name: String,
+    pub tray: TraySpec,
     pub color_output: ColorOutputSpec,
 }
 
@@ -42,6 +44,8 @@ impl Default for GenerationSpec {
             clearance_mm: 0.14,
             samples_per_piece: 64,
             solid_model: false,
+            place_name: "Mount Rainier".into(),
+            tray: TraySpec::default(),
             color_output: ColorOutputSpec::default(),
         }
     }
@@ -76,12 +80,79 @@ impl GenerationSpec {
         if !(16..=160).contains(&self.samples_per_piece) {
             bail!("samples per piece must be between 16 and 160");
         }
+        if self.place_name.trim().is_empty() || self.place_name.chars().count() > 48 {
+            bail!("place label must contain between 1 and 48 characters");
+        }
+        if self.place_name.chars().any(char::is_control) {
+            bail!("place label cannot contain control characters");
+        }
+        self.tray.validate()?;
         self.color_output.validate()?;
         Ok(())
     }
 
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraySpec {
+    pub enabled: bool,
+    pub tray_color: String,
+    pub contour_color: String,
+    pub label_color: String,
+    pub clearance_mm: f32,
+    pub rim_width_mm: f32,
+    pub floor_mm: f32,
+    pub rim_height_mm: f32,
+    pub contour_count: u32,
+}
+
+impl Default for TraySpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tray_color: "#252822".into(),
+            contour_color: "#E7E4D8".into(),
+            label_color: "#F4F3EC".into(),
+            clearance_mm: 0.6,
+            rim_width_mm: 8.0,
+            floor_mm: 1.6,
+            rim_height_mm: 3.2,
+            contour_count: 12,
+        }
+    }
+}
+
+impl TraySpec {
+    fn validate(&self) -> Result<()> {
+        for (name, color) in [
+            ("tray", &self.tray_color),
+            ("contour", &self.contour_color),
+            ("tray label", &self.label_color),
+        ] {
+            if !valid_hex_color(color) {
+                bail!("{name} color must use #RRGGBB");
+            }
+        }
+        if !(0.2..=2.0).contains(&self.clearance_mm) {
+            bail!("tray clearance must be between 0.2 and 2 mm");
+        }
+        if !(5.0..=16.0).contains(&self.rim_width_mm) {
+            bail!("tray rim width must be between 5 and 16 mm");
+        }
+        if !(1.0..=4.0).contains(&self.floor_mm) {
+            bail!("tray floor must be between 1 and 4 mm");
+        }
+        if !(2.0..=8.0).contains(&self.rim_height_mm) {
+            bail!("tray rim height must be between 2 and 8 mm");
+        }
+        if !(5..=30).contains(&self.contour_count) {
+            bail!("tray contour count must be between 5 and 30");
+        }
+        Ok(())
     }
 }
 
@@ -412,6 +483,422 @@ struct Mesh {
     materials: Vec<SurfaceClass>,
 }
 
+#[derive(Default)]
+struct MeshBuilder {
+    vertices: Vec<[f32; 3]>,
+    triangles: Vec<[u32; 3]>,
+    materials: Vec<SurfaceClass>,
+    indices: HashMap<(i64, i64, i64), u32>,
+}
+
+impl MeshBuilder {
+    fn vertex(&mut self, point: [f32; 3]) -> u32 {
+        let key = (
+            (point[0] * 100_000.0).round() as i64,
+            (point[1] * 100_000.0).round() as i64,
+            (point[2] * 100_000.0).round() as i64,
+        );
+        *self.indices.entry(key).or_insert_with(|| {
+            let index = self.vertices.len() as u32;
+            self.vertices.push(point);
+            index
+        })
+    }
+
+    fn triangle(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], material: SurfaceClass) {
+        let triangle = [self.vertex(a), self.vertex(b), self.vertex(c)];
+        self.triangles.push(triangle);
+        self.materials.push(material);
+    }
+
+    fn quad(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], material: SurfaceClass) {
+        self.triangle(a, b, c, material);
+        self.triangle(a, c, d, material);
+    }
+
+    fn finish(self, name: impl Into<String>) -> Mesh {
+        Mesh {
+            name: name.into(),
+            vertices: self.vertices,
+            triangles: self.triangles,
+            materials: self.materials,
+        }
+    }
+}
+
+fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Mesh {
+    let tray = &spec.tray;
+    let inner_width = spec.width_mm + tray.clearance_mm * 2.0;
+    let inner_height = spec.height_mm() + tray.clearance_mm * 2.0;
+    let outer_width = inner_width + tray.rim_width_mm * 2.0;
+    let outer_height = inner_height + tray.rim_width_mm * 2.0;
+    let inner_x0 = tray.rim_width_mm;
+    let inner_y0 = tray.rim_width_mm;
+    let inner_x1 = inner_x0 + inner_width;
+    let inner_y1 = inner_y0 + inner_height;
+    let floor_z = tray.floor_mm;
+    let rim_z = tray.floor_mm + tray.rim_height_mm;
+    let mut x_coordinates = regular_coordinates(0.0, outer_width, 0.58);
+    let mut y_coordinates = regular_coordinates(0.0, outer_height, 0.58);
+    insert_coordinate(&mut x_coordinates, inner_x0);
+    insert_coordinate(&mut x_coordinates, inner_x1);
+    insert_coordinate(&mut y_coordinates, inner_y0);
+    insert_coordinate(&mut y_coordinates, inner_y1);
+    let inner_x = x_coordinates
+        .iter()
+        .copied()
+        .filter(|x| *x >= inner_x0 && *x <= inner_x1)
+        .collect::<Vec<_>>();
+    let inner_y = y_coordinates
+        .iter()
+        .copied()
+        .filter(|y| *y >= inner_y0 && *y <= inner_y1)
+        .collect::<Vec<_>>();
+    let left_rim_x = x_coordinates
+        .iter()
+        .copied()
+        .filter(|x| *x <= inner_x0)
+        .collect::<Vec<_>>();
+    let right_rim_x = x_coordinates
+        .iter()
+        .copied()
+        .filter(|x| *x >= inner_x1)
+        .collect::<Vec<_>>();
+    let front_rim_y = y_coordinates
+        .iter()
+        .copied()
+        .filter(|y| *y <= inner_y0)
+        .collect::<Vec<_>>();
+    let back_rim_y = y_coordinates
+        .iter()
+        .copied()
+        .filter(|y| *y >= inner_y1)
+        .collect::<Vec<_>>();
+    let label = tray_label(spec, outer_width, rim_z);
+    let mut z_coordinates = vec![0.0, rim_z];
+    for row in 0..=7 {
+        z_coordinates.push(label.origin_z + row as f32 * label.scale);
+    }
+    z_coordinates.sort_by(f32::total_cmp);
+    z_coordinates.dedup_by(|a, b| (*a - *b).abs() < 0.000_01);
+    z_coordinates.retain(|z| *z >= 0.0 && *z <= rim_z);
+
+    let height_range = height_field.map(HeightField::range);
+    let mut mesh = MeshBuilder::default();
+
+    for y in inner_y.windows(2) {
+        for x in inner_x.windows(2) {
+            let u0 = (x[0] - inner_x0) / inner_width;
+            let u1 = (x[1] - inner_x0) / inner_width;
+            let v0 = (y[0] - inner_y0) / inner_height;
+            let v1 = (y[1] - inner_y0) / inner_height;
+            let bands = [
+                contour_band(spec, height_field, height_range, u0, v0),
+                contour_band(spec, height_field, height_range, u1, v0),
+                contour_band(spec, height_field, height_range, u1, v1),
+                contour_band(spec, height_field, height_range, u0, v1),
+            ];
+            let material = if bands.iter().any(|band| *band != bands[0]) {
+                SurfaceClass::Forest
+            } else {
+                SurfaceClass::Rock
+            };
+            mesh.quad(
+                [x[0], y[0], floor_z],
+                [x[1], y[0], floor_z],
+                [x[1], y[1], floor_z],
+                [x[0], y[1], floor_z],
+                material,
+            );
+        }
+    }
+
+    for x in x_coordinates.windows(2) {
+        for y in front_rim_y.windows(2) {
+            mesh.quad(
+                [x[0], y[0], rim_z],
+                [x[1], y[0], rim_z],
+                [x[1], y[1], rim_z],
+                [x[0], y[1], rim_z],
+                SurfaceClass::Rock,
+            );
+        }
+        for y in back_rim_y.windows(2) {
+            mesh.quad(
+                [x[0], y[0], rim_z],
+                [x[1], y[0], rim_z],
+                [x[1], y[1], rim_z],
+                [x[0], y[1], rim_z],
+                SurfaceClass::Rock,
+            );
+        }
+    }
+    for y in inner_y.windows(2) {
+        for x in left_rim_x.windows(2) {
+            mesh.quad(
+                [x[0], y[0], rim_z],
+                [x[1], y[0], rim_z],
+                [x[1], y[1], rim_z],
+                [x[0], y[1], rim_z],
+                SurfaceClass::Rock,
+            );
+        }
+        for x in right_rim_x.windows(2) {
+            mesh.quad(
+                [x[0], y[0], rim_z],
+                [x[1], y[0], rim_z],
+                [x[1], y[1], rim_z],
+                [x[0], y[1], rim_z],
+                SurfaceClass::Rock,
+            );
+        }
+    }
+
+    for x in inner_x.windows(2) {
+        mesh.quad(
+            [x[0], inner_y0, floor_z],
+            [x[1], inner_y0, floor_z],
+            [x[1], inner_y0, rim_z],
+            [x[0], inner_y0, rim_z],
+            SurfaceClass::Rock,
+        );
+        mesh.quad(
+            [x[1], inner_y1, floor_z],
+            [x[0], inner_y1, floor_z],
+            [x[0], inner_y1, rim_z],
+            [x[1], inner_y1, rim_z],
+            SurfaceClass::Rock,
+        );
+    }
+    for y in inner_y.windows(2) {
+        mesh.quad(
+            [inner_x0, y[1], floor_z],
+            [inner_x0, y[0], floor_z],
+            [inner_x0, y[0], rim_z],
+            [inner_x0, y[1], rim_z],
+            SurfaceClass::Rock,
+        );
+        mesh.quad(
+            [inner_x1, y[0], floor_z],
+            [inner_x1, y[1], floor_z],
+            [inner_x1, y[1], rim_z],
+            [inner_x1, y[0], rim_z],
+            SurfaceClass::Rock,
+        );
+    }
+
+    for z in z_coordinates.windows(2) {
+        for x in x_coordinates.windows(2) {
+            let material = if label.contains((x[0] + x[1]) * 0.5, (z[0] + z[1]) * 0.5) {
+                SurfaceClass::Snow
+            } else {
+                SurfaceClass::Rock
+            };
+            mesh.quad(
+                [x[0], 0.0, z[0]],
+                [x[1], 0.0, z[0]],
+                [x[1], 0.0, z[1]],
+                [x[0], 0.0, z[1]],
+                material,
+            );
+            mesh.quad(
+                [x[1], outer_height, z[0]],
+                [x[0], outer_height, z[0]],
+                [x[0], outer_height, z[1]],
+                [x[1], outer_height, z[1]],
+                SurfaceClass::Rock,
+            );
+        }
+        for y in y_coordinates.windows(2) {
+            mesh.quad(
+                [0.0, y[1], z[0]],
+                [0.0, y[0], z[0]],
+                [0.0, y[0], z[1]],
+                [0.0, y[1], z[1]],
+                SurfaceClass::Rock,
+            );
+            mesh.quad(
+                [outer_width, y[0], z[0]],
+                [outer_width, y[1], z[0]],
+                [outer_width, y[1], z[1]],
+                [outer_width, y[0], z[1]],
+                SurfaceClass::Rock,
+            );
+        }
+    }
+
+    let center = [outer_width * 0.5, outer_height * 0.5, 0.0];
+    let mut boundary = Vec::new();
+    boundary.extend(x_coordinates.iter().map(|x| [*x, 0.0, 0.0]));
+    boundary.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y, 0.0]));
+    boundary.extend(
+        x_coordinates
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|x| [*x, outer_height, 0.0]),
+    );
+    boundary.extend(
+        y_coordinates
+            .iter()
+            .rev()
+            .skip(1)
+            .take(y_coordinates.len().saturating_sub(2))
+            .map(|y| [0.0, *y, 0.0]),
+    );
+    for index in 0..boundary.len() {
+        let current = boundary[index];
+        let next = boundary[(index + 1) % boundary.len()];
+        mesh.triangle(center, next, current, SurfaceClass::Rock);
+    }
+
+    mesh.finish("terrain-tray")
+}
+
+fn contour_band(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    u: f32,
+    v: f32,
+) -> u32 {
+    (normalized_height(
+        height_field,
+        height_range,
+        u,
+        v,
+        spec.center_lat,
+        spec.center_lon,
+    ) * spec.tray.contour_count as f32)
+        .floor() as u32
+}
+
+fn regular_coordinates(start: f32, end: f32, maximum_step: f32) -> Vec<f32> {
+    let segments = (((end - start) / maximum_step).ceil().max(1.0) as usize).min(720);
+    (0..=segments)
+        .map(|index| start + (end - start) * index as f32 / segments as f32)
+        .collect()
+}
+
+fn insert_coordinate(coordinates: &mut Vec<f32>, value: f32) {
+    coordinates.push(value);
+    coordinates.sort_by(f32::total_cmp);
+    coordinates.dedup_by(|a, b| (*a - *b).abs() < 0.000_01);
+}
+
+struct TrayLabel {
+    text: Vec<char>,
+    origin_x: f32,
+    origin_z: f32,
+    scale: f32,
+}
+
+impl TrayLabel {
+    fn contains(&self, x: f32, z: f32) -> bool {
+        let local_x = (x - self.origin_x) / self.scale;
+        let local_z = (z - self.origin_z) / self.scale;
+        if local_x < 0.0 || !(0.0..7.0).contains(&local_z) {
+            return false;
+        }
+        let character = (local_x / 6.0).floor() as usize;
+        if character >= self.text.len() {
+            return false;
+        }
+        let column = (local_x - character as f32 * 6.0).floor() as usize;
+        if column >= 5 {
+            return false;
+        }
+        let row = 6_usize.saturating_sub(local_z.floor() as usize);
+        glyph_rows(self.text[character])[row] & (1 << (4 - column)) != 0
+    }
+}
+
+fn tray_label(spec: &GenerationSpec, width: f32, height: f32) -> TrayLabel {
+    let mut place = spec
+        .place_name
+        .chars()
+        .flat_map(char::to_uppercase)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '\'' | '.') {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    place = place.split_whitespace().collect::<Vec<_>>().join(" ");
+    place.truncate(place.floor_char_boundary(26));
+    let latitude = coordinate_label(spec.center_lat, 'N', 'S');
+    let longitude = coordinate_label(spec.center_lon, 'E', 'W');
+    let text = format!("{place}  {latitude} {longitude}")
+        .chars()
+        .collect::<Vec<_>>();
+    let logical_width = (text.len() * 6).saturating_sub(1) as f32;
+    let scale = 0.52_f32
+        .min((width - 4.0) / logical_width.max(1.0))
+        .min((height - 0.8) / 7.0);
+    let text_width = logical_width * scale;
+    TrayLabel {
+        text,
+        origin_x: (width - text_width) * 0.5,
+        origin_z: (height - scale * 7.0) * 0.5,
+        scale,
+    }
+}
+
+fn coordinate_label(value: f64, positive: char, negative: char) -> String {
+    format!(
+        "{:.4}{}",
+        value.abs(),
+        if value >= 0.0 { positive } else { negative }
+    )
+}
+
+fn glyph_rows(character: char) -> [u8; 7] {
+    match character {
+        'A' => [14, 17, 17, 31, 17, 17, 17],
+        'B' => [30, 17, 17, 30, 17, 17, 30],
+        'C' => [14, 17, 16, 16, 16, 17, 14],
+        'D' => [30, 17, 17, 17, 17, 17, 30],
+        'E' => [31, 16, 16, 30, 16, 16, 31],
+        'F' => [31, 16, 16, 30, 16, 16, 16],
+        'G' => [14, 17, 16, 23, 17, 17, 15],
+        'H' => [17, 17, 17, 31, 17, 17, 17],
+        'I' => [31, 4, 4, 4, 4, 4, 31],
+        'J' => [1, 1, 1, 1, 17, 17, 14],
+        'K' => [17, 18, 20, 24, 20, 18, 17],
+        'L' => [16, 16, 16, 16, 16, 16, 31],
+        'M' => [17, 27, 21, 21, 17, 17, 17],
+        'N' => [17, 25, 21, 19, 17, 17, 17],
+        'O' => [14, 17, 17, 17, 17, 17, 14],
+        'P' => [30, 17, 17, 30, 16, 16, 16],
+        'Q' => [14, 17, 17, 17, 21, 18, 13],
+        'R' => [30, 17, 17, 30, 20, 18, 17],
+        'S' => [15, 16, 16, 14, 1, 1, 30],
+        'T' => [31, 4, 4, 4, 4, 4, 4],
+        'U' => [17, 17, 17, 17, 17, 17, 14],
+        'V' => [17, 17, 17, 17, 17, 10, 4],
+        'W' => [17, 17, 17, 17, 21, 21, 10],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
+        'Y' => [17, 17, 10, 4, 4, 4, 4],
+        'Z' => [31, 1, 2, 4, 8, 16, 31],
+        '0' => [14, 17, 19, 21, 25, 17, 14],
+        '1' => [4, 12, 4, 4, 4, 4, 14],
+        '2' => [14, 17, 1, 2, 4, 8, 31],
+        '3' => [30, 1, 1, 14, 1, 1, 30],
+        '4' => [2, 6, 10, 18, 31, 2, 2],
+        '5' => [31, 16, 16, 30, 1, 1, 30],
+        '6' => [14, 16, 16, 30, 17, 17, 14],
+        '7' => [31, 1, 2, 4, 8, 8, 8],
+        '8' => [14, 17, 17, 14, 17, 17, 14],
+        '9' => [14, 17, 17, 15, 1, 1, 14],
+        '-' => [0, 0, 0, 31, 0, 0, 0],
+        '.' => [0, 0, 0, 0, 0, 12, 12],
+        '\'' => [4, 4, 8, 0, 0, 0, 0],
+        _ => [0; 7],
+    }
+}
+
 pub fn generate_project(spec: &GenerationSpec, output_dir: &Path) -> Result<ProjectManifest> {
     generate_project_inner(spec, None, None, output_dir)
 }
@@ -483,6 +970,27 @@ fn generate_project_inner(
     }
     project_writer.finish()?;
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
+
+    if spec.tray.enabled {
+        let tray_mesh = build_tray(spec, height_field);
+        let tray_stl_path = output_dir.join("terrain-tray.stl");
+        write_binary_stl(&tray_mesh, &tray_stl_path)?;
+        artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
+
+        let mut tray_spec = spec.clone();
+        tray_spec.solid_model = true;
+        tray_spec.color_output.enabled = true;
+        tray_spec.color_output.rock_color = spec.tray.tray_color.clone();
+        tray_spec.color_output.forest_color = spec.tray.contour_color.clone();
+        tray_spec.color_output.snow_color = spec.tray.label_color.clone();
+        tray_spec.color_output.water_color = spec.tray.tray_color.clone();
+        tray_spec.color_output.road_color = spec.tray.tray_color.clone();
+        let tray_3mf_path = output_dir.join("terrain-tray.3mf");
+        let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
+        tray_writer.write_mesh(&tray_mesh)?;
+        tray_writer.finish()?;
+        artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
+    }
 
     let preview_path = output_dir.join("preview.json");
     let preview_size =
@@ -1363,6 +1871,10 @@ mod tests {
     #[test]
     fn generated_piece_is_watertight() {
         let mesh = build_piece(&GenerationSpec::default(), None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+    }
+
+    fn assert_watertight(mesh: &Mesh) {
         let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
         for triangle in &mesh.triangles {
             for edge in [
@@ -1382,8 +1894,87 @@ mod tests {
             .iter()
             .filter(|(_, uses)| **uses != 2)
             .take(12)
+            .map(|(edge, uses)| {
+                (
+                    mesh.vertices[edge.0 as usize],
+                    mesh.vertices[edge.1 as usize],
+                    *uses,
+                )
+            })
             .collect::<Vec<_>>();
         assert!(bad_edges.is_empty(), "non-manifold edges: {bad_edges:?}");
+    }
+
+    #[test]
+    fn tray_is_watertight_and_keeps_contours_and_label_colors() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            place_name: "Mount Rainier".into(),
+            tray: TraySpec {
+                enabled: true,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(
+            3,
+            3,
+            vec![0.0, 1.0, 2.0, 1.0, 3.0, 5.0, 2.0, 5.0, 8.0],
+            "test",
+        )
+        .unwrap();
+        let mesh = build_tray(&spec, Some(&height));
+        assert_watertight(&mesh);
+        assert!(mesh.materials.contains(&SurfaceClass::Rock));
+        assert!(mesh.materials.contains(&SurfaceClass::Forest));
+        assert!(mesh.materials.contains(&SurfaceClass::Snow));
+    }
+
+    #[test]
+    fn tray_exports_separate_stl_and_color_3mf() {
+        let output_dir =
+            std::env::temp_dir().join(format!("terrain-tray-core-test-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            tray: TraySpec {
+                enabled: true,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let manifest = generate_project(&spec, &output_dir).unwrap();
+        assert!(output_dir.join("terrain-tray.stl").is_file());
+        assert!(output_dir.join("terrain-tray.3mf").is_file());
+        assert!(
+            manifest
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.name == "terrain-tray.3mf")
+        );
+
+        let file = File::open(output_dir.join("terrain-tray.3mf")).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut model = String::new();
+        archive
+            .by_name("3D/3dmodel.model")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        assert!(model.contains("color=\"#252822FF\""));
+        assert!(model.contains("color=\"#E7E4D8FF\""));
+        assert!(model.contains("color=\"#F4F3ECFF\""));
+        assert!(model.contains("p1=\"1\""));
+        assert!(model.contains("p1=\"2\""));
+
+        std::fs::remove_dir_all(output_dir).unwrap();
     }
 
     #[test]
@@ -1581,6 +2172,8 @@ mod tests {
         }))
         .unwrap();
         assert!(!spec.solid_model);
+        assert_eq!(spec.place_name, "Mount Rainier");
+        assert!(!spec.tray.enabled);
         assert_eq!(spec.color_output.water_color, "#2F76B5");
         assert_eq!(spec.color_output.road_color, "#D8A33C");
         assert!(spec.color_output.roads_enabled);

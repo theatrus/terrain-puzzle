@@ -566,6 +566,40 @@ a {
   border-color: var(--moss);
 }
 
+.place-label-field {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  margin-bottom: 20px;
+  text-transform: uppercase;
+}
+
+.place-label-field input {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  display: block;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: normal;
+  margin-top: 7px;
+  padding: 10px;
+  text-transform: none;
+  width: 100%;
+}
+
+.place-label-field small {
+  display: block;
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: normal;
+  margin-top: 6px;
+  text-transform: none;
+}
+
 .range-field {
   display: block;
   margin: 19px 0;
@@ -597,6 +631,10 @@ a {
   border-top: 1px solid var(--line);
   margin: 25px 0 0;
   padding: 20px 0 0;
+}
+
+.tray-controls {
+  margin-top: 25px;
 }
 
 .color-heading {

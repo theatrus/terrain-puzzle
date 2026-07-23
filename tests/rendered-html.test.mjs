@@ -46,6 +46,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Shallow terrain tray/);
   assert.match(html, /Tray place label/);
   assert.match(html, /Mapped buildings/);
+  assert.match(html, /Building color/);
   assert.match(html, /Render roads/);
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);

@@ -115,11 +115,15 @@ impl GenerationSpec {
     }
 
     pub fn effective_samples_per_piece(&self) -> u32 {
-        if self.color_output.enabled || self.buildings.enabled {
+        if self.uses_color_materials() {
             self.samples_per_piece.max(self.overlay_samples_per_piece)
         } else {
             self.samples_per_piece
         }
+    }
+
+    fn uses_color_materials(&self) -> bool {
+        self.color_output.enabled || self.buildings.enabled
     }
 }
 
@@ -3072,7 +3076,7 @@ impl<'a> ThreeMfWriter<'a> {
 
         zip.add_directory("3D/", options)?;
         zip.start_file("3D/3dmodel.model", options)?;
-        if spec.color_output.enabled {
+        if spec.uses_color_materials() {
             zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="m">
@@ -3093,7 +3097,7 @@ impl<'a> ThreeMfWriter<'a> {
                 .as_bytes(),
             )?;
         }
-        if spec.color_output.enabled {
+        if spec.uses_color_materials() {
             writeln!(
                 zip,
                 "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>",
@@ -3130,7 +3134,7 @@ impl<'a> ThreeMfWriter<'a> {
         }
         output.write_all(b"    </vertices><triangles>\n")?;
         for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
-            if self.spec.color_output.enabled {
+            if self.spec.uses_color_materials() {
                 let index = material.material_index();
                 writeln!(
                     output,
@@ -3672,6 +3676,53 @@ mod tests {
         assert_eq!(preview["surface_palette"]["building"], "#B8A890");
         assert!(preview["surface_coverage"]["building"].as_f64().unwrap() > 0.0);
         assert_eq!(preview["surface_source"], "test surface");
+
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn building_project_keeps_its_color_without_surface_colors() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-building-color-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            color_output: ColorOutputSpec {
+                enabled: false,
+                building_color: "#8A5B3D".into(),
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(5, 5, vec![0.0; 25], "test").unwrap();
+        let mut surface =
+            SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "buildings").unwrap();
+        surface.paint_building(&[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]], 12.0);
+
+        generate_project_with_fields(&spec, &height, Some(&surface), &output_dir).unwrap();
+
+        let file = File::open(output_dir.join("toposaic.3mf")).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut model = String::new();
+        archive
+            .by_name("3D/3dmodel.model")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        assert!(model.contains("<m:colorgroup id=\"1000\">"));
+        assert!(model.contains("color=\"#8A5B3DFF\""));
+        assert!(model.contains("pid=\"1000\""));
+        assert!(model.contains("p1=\"5\""));
 
         std::fs::remove_dir_all(output_dir).unwrap();
     }

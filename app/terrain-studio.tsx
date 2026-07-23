@@ -766,7 +766,8 @@ function ReliefPreview({
     };
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
-        const surfaceClass = spec.color_output.enabled
+        const surfaceClass =
+          spec.color_output.enabled || spec.buildings.enabled
           ? preview?.surface_classes?.[y * sampleWidth + x]
           : undefined;
         const color = new THREE.Color(classColor(surfaceClass));
@@ -1070,7 +1071,7 @@ function ReliefPreview({
           Reset view
         </button>
       </div>
-      {spec.color_output.enabled && (
+      {(spec.color_output.enabled || spec.buildings.enabled) && (
         <div className="color-legend" aria-label="Surface color legend">
           {(
             [
@@ -1083,9 +1084,18 @@ function ReliefPreview({
             ] as const
           )
             .filter(
-              ([, key]) =>
-                (key !== "road" || spec.color_output.roads_enabled) &&
-                (key !== "building" || spec.buildings.enabled),
+              ([, key]) => {
+                if (!spec.color_output.enabled) {
+                  return (
+                    key === "rock" ||
+                    (key === "building" && spec.buildings.enabled)
+                  );
+                }
+                return (
+                  (key !== "road" || spec.color_output.roads_enabled) &&
+                  (key !== "building" || spec.buildings.enabled)
+                );
+              },
             )
             .map(([label, key, color]) => (
               <span key={key}>
@@ -1803,7 +1813,7 @@ export function TerrainStudio() {
             <div className="color-heading">
               <div>
                 <strong className="color-title">Surface colors</strong>
-                <p>Paint the 3MF from mapped land cover, routes, and buildings.</p>
+                <p>Paint the 3MF from mapped land cover and routes.</p>
               </div>
               <label className="color-toggle">
                 <input
@@ -1826,7 +1836,6 @@ export function TerrainStudio() {
                       ["Snow", "snow_color"],
                       ["Water", "water_color"],
                       ["Route", "road_color"],
-                      ["Building", "building_color"],
                     ] as const
                   ).map(([label, key]) => (
                     <label key={key}>
@@ -1972,6 +1981,20 @@ export function TerrainStudio() {
                 <span>{spec.buildings.enabled ? "On" : "Off"}</span>
               </label>
             </div>
+            <div className="color-swatches building-color-swatch">
+              <label>
+                <input
+                  aria-label="Building color"
+                  type="color"
+                  value={spec.color_output.building_color}
+                  onChange={(event) =>
+                    updateColor("building_color", event.target.value)
+                  }
+                />
+                <span>Building color</span>
+                <code>{spec.color_output.building_color.toUpperCase()}</code>
+              </label>
+            </div>
             {spec.buildings.enabled && (
               <>
                 <RangeField
@@ -1984,9 +2007,10 @@ export function TerrainStudio() {
                   onChange={(value) => updateBuildings("z_scale", value)}
                 />
                 <p className="color-note">
-                  1× keeps true height against the map width. Higher values make
-                  small buildings easier to print. Tagged heights are used
-                  first, then floor count, then an 8 m default.
+                  Buildings use their own 3MF color material. 1× keeps true
+                  height against the map width. Higher values make small
+                  buildings easier to print. Tagged heights are used first,
+                  then floor count, then an 8 m default.
                 </p>
               </>
             )}

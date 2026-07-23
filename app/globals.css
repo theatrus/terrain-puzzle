@@ -877,6 +877,10 @@ fieldset.control-section .road-options {
   grid-column: 1 / -1;
 }
 
+.building-color-swatch {
+  grid-template-columns: 1fr;
+}
+
 .color-swatches input {
   background: transparent;
   border: 0;

@@ -46,14 +46,27 @@ test("switches between the reflowed control panels", async ({ page }) => {
     .toBeGreaterThan(initialHeightScale);
 
   await page.getByRole("tab", { name: "Surface" }).click();
-  await expect(
-    page.getByRole("group", { name: "Surface colors" }),
-  ).toBeVisible();
+  const surfaceColors = page.getByRole("group", { name: "Surface colors" });
+  await expect(surfaceColors).toBeVisible();
   await expect(page.getByLabel("Find a place")).toBeHidden();
+  await surfaceColors.getByRole("checkbox").first().uncheck();
 
   await page.getByRole("tab", { name: "Buildings" }).click();
   await expect(
     page.getByRole("group", { name: "Mapped buildings" }),
+  ).toBeVisible();
+  const buildingColor = page.getByLabel("Building color");
+  await expect(buildingColor).toHaveValue("#b8a890");
+  await buildingColor.fill("#8a5b3d");
+  await expect(buildingColor).toHaveValue("#8a5b3d");
+  await page
+    .getByRole("group", { name: "Mapped buildings" })
+    .getByRole("checkbox")
+    .check();
+  await expect(
+    page
+      .getByLabel("Surface color legend")
+      .getByText("Building", { exact: true }),
   ).toBeVisible();
 
   await page.getByRole("tab", { name: "Tray" }).click();

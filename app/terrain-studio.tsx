@@ -22,6 +22,7 @@ type GenerationSpec = {
   relief_mm: number;
   clearance_mm: number;
   samples_per_piece: number;
+  solid_model: boolean;
   color_output: {
     enabled: boolean;
     forest_color: string;
@@ -47,6 +48,7 @@ type Job = {
   progress: number;
   artifacts: Artifact[];
   error?: string | null;
+  spec: GenerationSpec;
 };
 
 type PreviewData = {
@@ -55,6 +57,7 @@ type PreviewData = {
   values: number[];
   rows: number;
   columns: number;
+  solid_model?: boolean;
   surface_classes?: number[];
   surface_palette?: {
     rock: string;
@@ -95,6 +98,7 @@ const initialSpec: GenerationSpec = {
   relief_mm: 14,
   clearance_mm: 0.14,
   samples_per_piece: 64,
+  solid_model: false,
   color_output: {
     enabled: true,
     forest_color: "#28543A",
@@ -662,58 +666,60 @@ function ReliefPreview({
     const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
     const baseDepth =
       Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.17;
-    for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
-      for (let row = 0; row < spec.rows; row += 1) {
-        const start = puzzleGridPoint(spec, row, edgeColumn);
-        const end = puzzleGridPoint(spec, row + 1, edgeColumn);
-        const pattern = sharedEdgePattern(1, edgeColumn, row);
-        const sign = edgeSign(1, row, edgeColumn, spec.columns);
-        context.beginPath();
-        for (let step = 0; step <= 64; step += 1) {
-          const t = step / 64;
-          const edgePoint = puzzleEdgePoint(
-            start,
-            end,
-            pattern,
-            sign,
-            t,
-            baseDepth,
-          );
-          const point = projectedPoint(
-            edgePoint.x / spec.width_mm,
-            edgePoint.y / modelHeight,
-          );
-          if (step === 0) context.moveTo(point.x, point.y);
-          else context.lineTo(point.x, point.y);
+    if (!spec.solid_model) {
+      for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
+        for (let row = 0; row < spec.rows; row += 1) {
+          const start = puzzleGridPoint(spec, row, edgeColumn);
+          const end = puzzleGridPoint(spec, row + 1, edgeColumn);
+          const pattern = sharedEdgePattern(1, edgeColumn, row);
+          const sign = edgeSign(1, row, edgeColumn, spec.columns);
+          context.beginPath();
+          for (let step = 0; step <= 64; step += 1) {
+            const t = step / 64;
+            const edgePoint = puzzleEdgePoint(
+              start,
+              end,
+              pattern,
+              sign,
+              t,
+              baseDepth,
+            );
+            const point = projectedPoint(
+              edgePoint.x / spec.width_mm,
+              edgePoint.y / modelHeight,
+            );
+            if (step === 0) context.moveTo(point.x, point.y);
+            else context.lineTo(point.x, point.y);
+          }
+          context.stroke();
         }
-        context.stroke();
       }
-    }
-    for (let edgeRow = 1; edgeRow < spec.rows; edgeRow += 1) {
-      for (let column = 0; column < spec.columns; column += 1) {
-        const start = puzzleGridPoint(spec, edgeRow, column);
-        const end = puzzleGridPoint(spec, edgeRow, column + 1);
-        const pattern = sharedEdgePattern(0, edgeRow, column);
-        const sign = edgeSign(0, column, edgeRow, spec.rows);
-        context.beginPath();
-        for (let step = 0; step <= 64; step += 1) {
-          const t = step / 64;
-          const edgePoint = puzzleEdgePoint(
-            start,
-            end,
-            pattern,
-            sign,
-            t,
-            baseDepth,
-          );
-          const point = projectedPoint(
-            edgePoint.x / spec.width_mm,
-            edgePoint.y / modelHeight,
-          );
-          if (step === 0) context.moveTo(point.x, point.y);
-          else context.lineTo(point.x, point.y);
+      for (let edgeRow = 1; edgeRow < spec.rows; edgeRow += 1) {
+        for (let column = 0; column < spec.columns; column += 1) {
+          const start = puzzleGridPoint(spec, edgeRow, column);
+          const end = puzzleGridPoint(spec, edgeRow, column + 1);
+          const pattern = sharedEdgePattern(0, edgeRow, column);
+          const sign = edgeSign(0, column, edgeRow, spec.rows);
+          context.beginPath();
+          for (let step = 0; step <= 64; step += 1) {
+            const t = step / 64;
+            const edgePoint = puzzleEdgePoint(
+              start,
+              end,
+              pattern,
+              sign,
+              t,
+              baseDepth,
+            );
+            const point = projectedPoint(
+              edgePoint.x / spec.width_mm,
+              edgePoint.y / modelHeight,
+            );
+            if (step === 0) context.moveTo(point.x, point.y);
+            else context.lineTo(point.x, point.y);
+          }
+          context.stroke();
         }
-        context.stroke();
       }
     }
   }, [preview, spec]);
@@ -753,10 +759,14 @@ function ReliefPreview({
       <div className="preview-label">
         <span>
           {preview ? "Generated terrain" : "Fast shape preview"} ·{" "}
-          {spec.samples_per_piece} samples/piece
+          {spec.solid_model
+            ? `${Math.max(96, Math.min(spec.samples_per_piece * 2, 256))} mesh samples`
+            : `${spec.samples_per_piece} samples/piece`}
         </span>
         <strong>
-          {spec.columns} × {spec.rows} pieces
+          {spec.solid_model
+            ? "One solid terrain model"
+            : `${spec.columns} × ${spec.rows} pieces`}
         </strong>
       </div>
     </div>
@@ -941,7 +951,9 @@ export function TerrainStudio() {
         ? "Mapping land cover and prominent roads…"
         : "Mapping forest, rock, snow, and water…";
     }
-    return "Building watertight pieces…";
+    return job.spec.solid_model
+      ? "Building one watertight terrain model…"
+      : "Building watertight pieces…";
   }, [job, spec.color_output.enabled, spec.color_output.roads_enabled]);
 
   return (
@@ -968,8 +980,8 @@ export function TerrainStudio() {
           <h1>Turn any landscape into a puzzle.</h1>
         </div>
         <p className="hero-copy">
-          Pick a place, tune the relief, then generate watertight 3MF and STL
-          files for your printer.
+          Pick a place, tune the relief, then print it as one solid terrain
+          model or a full jigsaw.
         </p>
       </section>
 
@@ -983,7 +995,7 @@ export function TerrainStudio() {
           <div className="panel-heading">
             <span>01</span>
             <div>
-              <h2>Shape your puzzle</h2>
+              <h2>Shape your terrain</h2>
               <p>All sizes use millimetres.</p>
             </div>
           </div>
@@ -1101,21 +1113,23 @@ export function TerrainStudio() {
           <RangeField
             label="Mesh detail"
             value={spec.samples_per_piece}
-            unit=" samples/piece"
+            unit={spec.solid_model ? "" : " samples/piece"}
             min={32}
             max={128}
             step={8}
             onChange={(value) => update("samples_per_piece", value)}
           />
-          <RangeField
-            label="Fit clearance"
-            value={spec.clearance_mm}
-            unit=" mm"
-            min={0}
-            max={0.4}
-            step={0.02}
-            onChange={(value) => update("clearance_mm", value)}
-          />
+          {!spec.solid_model && (
+            <RangeField
+              label="Fit clearance"
+              value={spec.clearance_mm}
+              unit=" mm"
+              min={0}
+              max={0.4}
+              step={0.02}
+              onChange={(value) => update("clearance_mm", value)}
+            />
+          )}
 
           <fieldset className="color-controls" aria-label="Surface colors">
             <div className="color-heading">
@@ -1201,8 +1215,40 @@ export function TerrainStudio() {
             )}
           </fieldset>
 
-          <fieldset className="piece-grid">
-            <legend>Piece layout</legend>
+          <fieldset className="model-mode">
+            <legend>Model type</legend>
+            <button
+              type="button"
+              className={!spec.solid_model ? "active" : ""}
+              onClick={() => update("solid_model", false)}
+            >
+              <span className="mode-mark puzzle-mark" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+              <span>
+                <strong>Jigsaw puzzle</strong>
+                <small>Separate interlocking pieces</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={spec.solid_model ? "active" : ""}
+              onClick={() => update("solid_model", true)}
+            >
+              <span className="mode-mark solid-mark" aria-hidden="true" />
+              <span>
+                <strong>Solid terrain</strong>
+                <small>One watertight model, no cuts</small>
+              </span>
+            </button>
+          </fieldset>
+
+          {!spec.solid_model && (
+            <fieldset className="piece-grid">
+              <legend>Piece layout</legend>
             {[4, 6, 8, 10, 12].map((count) => (
               <button
                 type="button"
@@ -1278,7 +1324,8 @@ export function TerrainStudio() {
                 stronger knobs and easier handling.
               </p>
             )}
-          </fieldset>
+            </fieldset>
+          )}
 
           <div className="engine-note">
             <span>Print source</span>
@@ -1359,7 +1406,11 @@ export function TerrainStudio() {
                       </a>
                     ))}
                   <details>
-                    <summary>Separate STL pieces</summary>
+                    <summary>
+                      {job.spec.solid_model
+                        ? "Solid terrain STL"
+                        : "Separate STL pieces"}
+                    </summary>
                     <div>
                       {job.artifacts
                         .filter((artifact) => artifact.name.endsWith(".stl"))

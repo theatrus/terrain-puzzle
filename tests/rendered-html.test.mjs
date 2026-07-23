@@ -33,6 +33,7 @@ test("server-renders Terrain Puzzle Studio", async () => {
   const html = await response.text();
   assert.match(html, /<title>Terrain Puzzle Studio<\/title>/i);
   assert.match(html, /Turn any landscape into a puzzle\./);
+  assert.match(html, /Solid terrain/);
   assert.match(html, /SQLite/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

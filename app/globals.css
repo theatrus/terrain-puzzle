@@ -691,6 +691,80 @@ a {
   font-size: 9px;
 }
 
+.model-mode {
+  border: 0;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+  margin: 25px 0 0;
+  padding: 20px 0 0;
+}
+
+.model-mode legend {
+  float: left;
+  font-size: 12px;
+  font-weight: 660;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+.model-mode button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 32px 1fr;
+  padding: 11px;
+  text-align: left;
+}
+
+.model-mode button:hover,
+.model-mode button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: white;
+}
+
+.model-mode button strong,
+.model-mode button small {
+  display: block;
+}
+
+.model-mode button strong {
+  font-size: 10px;
+}
+
+.model-mode button small {
+  color: currentColor;
+  font-size: 8px;
+  margin-top: 3px;
+  opacity: 0.68;
+}
+
+.mode-mark {
+  height: 28px;
+  width: 28px;
+}
+
+.puzzle-mark {
+  display: grid;
+  gap: 2px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.puzzle-mark i,
+.solid-mark {
+  border: 1px solid currentColor;
+}
+
+.solid-mark {
+  display: block;
+}
+
 .piece-grid {
   border: 0;
   border-top: 1px solid var(--line);

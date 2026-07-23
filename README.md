@@ -6,6 +6,10 @@ tabs and sockets, and stores job state in SQLite. The web app lets you choose a
 place and tune the printable model, including the mesh detail and surface
 colors.
 
+Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
+model with a straight outer edge and no puzzle seams. It keeps the full source
+sampling grid while limiting the single mesh to a safe detail level.
+
 Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
 pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
 

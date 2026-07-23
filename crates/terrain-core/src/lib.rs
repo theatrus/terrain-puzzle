@@ -24,6 +24,7 @@ pub struct GenerationSpec {
     pub relief_mm: f32,
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
+    pub solid_model: bool,
     pub color_output: ColorOutputSpec,
 }
 
@@ -40,6 +41,7 @@ impl Default for GenerationSpec {
             relief_mm: 14.0,
             clearance_mm: 0.14,
             samples_per_piece: 64,
+            solid_model: false,
             color_output: ColorOutputSpec::default(),
         }
     }
@@ -444,10 +446,18 @@ fn generate_project_inner(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
 
-    let mut meshes = Vec::with_capacity((spec.rows * spec.columns) as usize);
-    for row in 0..spec.rows {
-        for column in 0..spec.columns {
-            meshes.push(build_piece(spec, height_field, surface_field, row, column)?);
+    let mut meshes = Vec::with_capacity(if spec.solid_model {
+        1
+    } else {
+        (spec.rows * spec.columns) as usize
+    });
+    if spec.solid_model {
+        meshes.push(build_piece(spec, height_field, surface_field, 0, 0)?);
+    } else {
+        for row in 0..spec.rows {
+            for column in 0..spec.columns {
+                meshes.push(build_piece(spec, height_field, surface_field, row, column)?);
+            }
         }
     }
 
@@ -455,13 +465,21 @@ fn generate_project_inner(
     for (index, mesh) in meshes.iter().enumerate() {
         let row = index as u32 / spec.columns + 1;
         let column = index as u32 % spec.columns + 1;
-        let name = format!("piece-{row}-{column}.stl");
+        let name = if spec.solid_model {
+            "terrain-solid.stl".into()
+        } else {
+            format!("piece-{row}-{column}.stl")
+        };
         let path = output_dir.join(&name);
         write_binary_stl(mesh, &path)?;
         artifacts.push(file_artifact(&path, "model/stl")?);
     }
 
-    let project_path = output_dir.join("terrain-puzzle.3mf");
+    let project_path = output_dir.join(if spec.solid_model {
+        "terrain-solid.3mf"
+    } else {
+        "terrain-puzzle.3mf"
+    });
     write_3mf(spec, &meshes, &project_path)?;
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
@@ -500,18 +518,42 @@ fn build_piece(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
-    let samples = spec.samples_per_piece as usize;
-    let piece_width = spec.width_mm / spec.columns as f32;
-    let piece_height = spec.height_mm() / spec.rows as f32;
-    let origin_x = column as f32 * piece_width;
-    let origin_y = row as f32 * piece_height;
+    let samples = if spec.solid_model {
+        (spec.samples_per_piece * 2).clamp(96, 256) as usize
+    } else {
+        spec.samples_per_piece as usize
+    };
+    let piece_width = if spec.solid_model {
+        spec.width_mm
+    } else {
+        spec.width_mm / spec.columns as f32
+    };
+    let piece_height = if spec.solid_model {
+        spec.height_mm()
+    } else {
+        spec.height_mm() / spec.rows as f32
+    };
+    let origin_x = if spec.solid_model {
+        0.0
+    } else {
+        column as f32 * piece_width
+    };
+    let origin_y = if spec.solid_model {
+        0.0
+    } else {
+        row as f32 * piece_height
+    };
     let assembled_width = spec.width_mm;
     let assembled_height = spec.height_mm();
     let height_range = height_field.map(HeightField::range);
-    let outline = piece_outline(spec, row, column, false)?
-        .into_iter()
-        .map(|[x, y]| [x - origin_x, y - origin_y])
-        .collect::<Vec<_>>();
+    let outline = if spec.solid_model {
+        solid_outline(spec, samples)
+    } else {
+        piece_outline(spec, row, column, false)?
+    }
+    .into_iter()
+    .map(|[x, y]| [x - origin_x, y - origin_y])
+    .collect::<Vec<_>>();
     let mut points = outline
         .iter()
         .map(|point| Point2::new(point[0] as f64, point[1] as f64))
@@ -551,7 +593,7 @@ fn build_piece(
 
     let triangulation =
         ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
-            .context("triangulate jigsaw piece")?;
+            .context("triangulate terrain outline")?;
     let top_count = triangulation.num_vertices();
     let mut vertices = Vec::with_capacity(top_count * 2);
     for layer in 0..2 {
@@ -645,11 +687,37 @@ fn build_piece(
     }
 
     Ok(Mesh {
-        name: format!("Piece {}-{}", row + 1, column + 1),
+        name: if spec.solid_model {
+            "Solid Terrain".into()
+        } else {
+            format!("Piece {}-{}", row + 1, column + 1)
+        },
         vertices,
         triangles,
         materials,
     })
+}
+
+fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Vec<[f32; 2]> {
+    let corners = [
+        [0.0, 0.0],
+        [spec.width_mm, 0.0],
+        [spec.width_mm, spec.height_mm()],
+        [0.0, spec.height_mm()],
+    ];
+    let mut outline = Vec::with_capacity(edge_samples * 4);
+    for edge in 0..4 {
+        let start = corners[edge];
+        let end = corners[(edge + 1) % corners.len()];
+        for index in 0..edge_samples {
+            let t = index as f32 / edge_samples as f32;
+            outline.push([
+                start[0] + (end[0] - start[0]) * t,
+                start[1] + (end[1] - start[1]) * t,
+            ]);
+        }
+    }
+    outline
 }
 
 fn piece_outline(
@@ -1021,6 +1089,7 @@ fn build_preview(
         "values": heights,
         "rows": spec.rows,
         "columns": spec.columns,
+        "solid_model": spec.solid_model,
     });
     if let (Some(field), Some(classes)) = (surface_field, surface_classes) {
         let coverage = field.coverage();
@@ -1313,6 +1382,74 @@ mod tests {
     }
 
     #[test]
+    fn solid_mode_writes_one_plain_watertight_model() {
+        let output_dir =
+            std::env::temp_dir().join(format!("terrain-solid-core-test-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            solid_model: true,
+            ..GenerationSpec::default()
+        };
+        let outline = solid_outline(&spec, 32);
+        assert!(outline.iter().all(|point| {
+            point[0] == 0.0
+                || point[0] == spec.width_mm
+                || point[1] == 0.0
+                || point[1] == spec.height_mm()
+        }));
+
+        let manifest = generate_project(&spec, &output_dir).unwrap();
+        assert!(output_dir.join("terrain-solid.stl").is_file());
+        assert!(output_dir.join("terrain-solid.3mf").is_file());
+        assert!(!output_dir.join("terrain-puzzle.3mf").exists());
+        assert!(!output_dir.join("piece-1-1.stl").exists());
+        assert_eq!(
+            manifest
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.name.ends_with(".stl"))
+                .count(),
+            1
+        );
+
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for triangle in &mesh.triangles {
+            for edge in [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ] {
+                let ordered = if edge.0 < edge.1 {
+                    edge
+                } else {
+                    (edge.1, edge.0)
+                };
+                *edges.entry(ordered).or_default() += 1;
+            }
+        }
+        assert!(edges.values().all(|uses| *uses == 2));
+
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn solid_mode_supports_maximum_detail() {
+        let spec = GenerationSpec {
+            samples_per_piece: 128,
+            solid_model: true,
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert!(mesh.vertices.len() > 100_000);
+    }
+
+    #[test]
     fn color_project_writes_standard_3mf_properties_and_preview() {
         let output_dir =
             std::env::temp_dir().join(format!("terrain-puzzle-color-test-{}", std::process::id()));
@@ -1405,6 +1542,7 @@ mod tests {
             }
         }))
         .unwrap();
+        assert!(!spec.solid_model);
         assert_eq!(spec.color_output.water_color, "#2F76B5");
         assert_eq!(spec.color_output.road_color, "#D8A33C");
         assert!(spec.color_output.roads_enabled);

@@ -8,6 +8,16 @@ tabs and sockets, and stores job state in SQLite. The web app lets you choose a
 place and tune the printable model, including the mesh detail and surface
 colors.
 
+## Screenshots
+
+![TopoSaic workspace showing the Mount Rainier map and interactive 3D terrain puzzle preview](docs/images/toposaic-studio.png)
+
+*Choose a place beside a live, rotatable elevation preview.*
+
+![TopoSaic surface controls for terrain colors and mapped waterways](docs/images/toposaic-surface-controls.png)
+
+*Tune print colors and mapped surface layers without leaving the 3D workspace.*
+
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
 inlays. Raised text on the front top lip shows the chosen place name, latitude,

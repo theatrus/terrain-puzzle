@@ -29,11 +29,13 @@ Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
 forest, rock, snow, and water colors. It also reads prominent roads from
 OpenStreetMap through Overpass, then draws motorway, trunk, primary, and
-secondary roads at print-safe widths. If none cross the selected area, it draws
-paths, footways, bridleways, tracks, and cycleways as a trail fallback. The 3MF
-stores standard triangle color properties. Roads also rise by one configurable
-print-layer height, which defaults to 0.2 mm. STL files stay single-color but
-retain the raised road geometry.
+secondary roads as smooth, print-safe vector lines. If none cross the selected
+area, it draws paths, footways, bridleways, tracks, and cycleways as a trail
+fallback. Rivers, streams, canals, and mapped water areas use the same vector
+path so they stay smooth and flush with the terrain. Building footprints keep
+their straight mapped edges. The 3MF stores standard triangle color properties.
+Roads also rise by one configurable print-layer height, which defaults to 0.2
+mm. STL files stay single-color but retain the raised road geometry.
 
 Overlay detail is separate from the base terrain setting. It defaults to 112
 samples per piece and can rise to 192, giving roads, buildings, water, snow,

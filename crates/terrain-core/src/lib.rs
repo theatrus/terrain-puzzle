@@ -19,6 +19,8 @@ const TRAY_FONT: &[u8] = include_bytes!(concat!(
 const TRAY_CONTOUR_WIDTH_MM: f32 = 0.45;
 const TRAY_CONTOUR_INLAY_MM: f32 = 0.2;
 const TRAY_CONTOUR_SURFACE_OFFSET_MM: f32 = 0.01;
+const VECTOR_BUCKET_COLUMNS: usize = 32;
+const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -323,6 +325,28 @@ pub struct SurfaceField {
     pub classes: Vec<SurfaceClass>,
     pub building_heights_m: Vec<f32>,
     pub source: String,
+    base_classes: Vec<SurfaceClass>,
+    vector_lines: Vec<VectorSurfaceLine>,
+    vector_areas: Vec<VectorSurfaceArea>,
+    vector_line_buckets: Vec<Vec<usize>>,
+    vector_area_buckets: Vec<Vec<usize>>,
+    has_vector_buildings: bool,
+}
+
+#[derive(Debug, Clone)]
+struct VectorSurfaceLine {
+    points_mm: Vec<[f32; 2]>,
+    width_mm: f32,
+    model_width_mm: f32,
+    model_height_mm: f32,
+    class: SurfaceClass,
+}
+
+#[derive(Debug, Clone)]
+struct VectorSurfaceArea {
+    points: Vec<[f32; 2]>,
+    class: Option<SurfaceClass>,
+    building_height_m: f32,
 }
 
 impl SurfaceField {
@@ -341,9 +365,15 @@ impl SurfaceField {
         Ok(Self {
             width,
             height,
+            base_classes: classes.clone(),
             classes,
             building_heights_m: vec![0.0; width * height],
             source: source.into(),
+            vector_lines: Vec::new(),
+            vector_areas: Vec::new(),
+            vector_line_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
+            vector_area_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
+            has_vector_buildings: false,
         })
     }
 
@@ -356,6 +386,7 @@ impl SurfaceField {
         for _ in 0..2 {
             self.filter_components_smaller_than(minimum_cells);
         }
+        self.base_classes.clone_from(&self.classes);
     }
 
     pub fn paint_polyline(
@@ -368,9 +399,47 @@ impl SurfaceField {
         if points.len() < 2 {
             return;
         }
+        let print_height_mm = print_width_mm * (self.height - 1) as f32 / (self.width - 1) as f32;
+        let smooth_points = smooth_surface_line(
+            &points
+                .iter()
+                .map(|point| [point[0] * print_width_mm, point[1] * print_height_mm])
+                .collect::<Vec<_>>(),
+        );
+        let line = VectorSurfaceLine {
+            points_mm: smooth_points.clone(),
+            width_mm: line_width_mm,
+            model_width_mm: print_width_mm,
+            model_height_mm: print_height_mm,
+            class,
+        };
+        let half_width = line_width_mm * 0.5;
+        let bounds = line.points_mm.iter().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |bounds, point| {
+                [
+                    bounds[0].min((point[0] - half_width) / print_width_mm),
+                    bounds[1].min((point[1] - half_width) / print_height_mm),
+                    bounds[2].max((point[0] + half_width) / print_width_mm),
+                    bounds[3].max((point[1] + half_width) / print_height_mm),
+                ]
+            },
+        );
+        let line_index = self.vector_lines.len();
+        self.vector_lines.push(line);
+        add_to_vector_buckets(&mut self.vector_line_buckets, bounds, line_index);
         let cells_per_mm = (self.width - 1) as f32 / print_width_mm.max(f32::EPSILON);
         let radius = (line_width_mm * 0.5 * cells_per_mm).max(0.75);
-        for segment in points.windows(2) {
+        let raster_points = smooth_points
+            .iter()
+            .map(|point| [point[0] / print_width_mm, point[1] / print_height_mm])
+            .collect::<Vec<_>>();
+        for segment in raster_points.windows(2) {
             let start = [
                 segment[0][0] * (self.width - 1) as f32,
                 segment[0][1] * (self.height - 1) as f32,
@@ -413,6 +482,47 @@ impl SurfaceField {
         if points.len() < 3 || !height_m.is_finite() || height_m <= 0.0 {
             return;
         }
+        let area = VectorSurfaceArea {
+            points: points.to_vec(),
+            class: None,
+            building_height_m: height_m,
+        };
+        let area_index = self.vector_areas.len();
+        add_to_vector_buckets(
+            &mut self.vector_area_buckets,
+            surface_area_bounds(&area.points),
+            area_index,
+        );
+        self.vector_areas.push(area);
+        self.has_vector_buildings = true;
+        self.rasterize_area(points, None, Some(height_m));
+    }
+
+    pub fn paint_surface_area(&mut self, points: &[[f32; 2]], class: SurfaceClass) {
+        if points.len() < 3 {
+            return;
+        }
+        let area = VectorSurfaceArea {
+            points: points.to_vec(),
+            class: Some(class),
+            building_height_m: 0.0,
+        };
+        let area_index = self.vector_areas.len();
+        add_to_vector_buckets(
+            &mut self.vector_area_buckets,
+            surface_area_bounds(&area.points),
+            area_index,
+        );
+        self.vector_areas.push(area);
+        self.rasterize_area(points, Some(class), None);
+    }
+
+    fn rasterize_area(
+        &mut self,
+        points: &[[f32; 2]],
+        class: Option<SurfaceClass>,
+        building_height_m: Option<f32>,
+    ) {
         let pixels = points
             .iter()
             .map(|point| {
@@ -453,13 +563,19 @@ impl SurfaceField {
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 if point_in_polygon([x as f32, y as f32], &pixels) {
-                    let height = &mut self.building_heights_m[y * self.width + x];
-                    *height = height.max(height_m);
+                    let index = y * self.width + x;
+                    if let Some(class) = class {
+                        self.classes[index] = class;
+                    }
+                    if let Some(building_height_m) = building_height_m {
+                        let height = &mut self.building_heights_m[index];
+                        *height = height.max(building_height_m);
+                    }
                     painted = true;
                 }
             }
         }
-        if !painted {
+        if let (false, Some(building_height_m)) = (painted, building_height_m) {
             let center = pixels.iter().fold([0.0, 0.0], |sum, point| {
                 [sum[0] + point[0], sum[1] + point[1]]
             });
@@ -470,7 +586,7 @@ impl SurfaceField {
                 .round()
                 .clamp(0.0, (self.height - 1) as f32) as usize;
             let height = &mut self.building_heights_m[y * self.width + x];
-            *height = height.max(height_m);
+            *height = height.max(building_height_m);
         }
     }
 
@@ -531,12 +647,52 @@ impl SurfaceField {
     }
 
     fn at(&self, u: f32, v: f32) -> SurfaceClass {
+        let bucket = vector_bucket_index(u, v);
+        let line_indices = &self.vector_line_buckets[bucket];
+        if line_indices.iter().any(|index| {
+            let line = &self.vector_lines[*index];
+            line.class == SurfaceClass::Road && surface_line_contains(line, u, v)
+        }) {
+            return SurfaceClass::Road;
+        }
+        if let Some(class) = self.vector_area_buckets[bucket]
+            .iter()
+            .rev()
+            .filter_map(|index| {
+                let area = &self.vector_areas[*index];
+                area.class.map(|class| (area, class))
+            })
+            .find(|(area, _)| point_in_polygon([u, v], &area.points))
+            .map(|(_, class)| class)
+        {
+            return class;
+        }
+        if let Some(class) = self.vector_line_buckets[bucket]
+            .iter()
+            .rev()
+            .map(|index| &self.vector_lines[*index])
+            .filter(|line| line.class != SurfaceClass::Road)
+            .find(|line| surface_line_contains(line, u, v))
+            .map(|line| line.class)
+        {
+            return class;
+        }
         let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
         let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
-        self.classes[y * self.width + x]
+        self.base_classes[y * self.width + x]
     }
 
     fn building_height_at(&self, u: f32, v: f32) -> f32 {
+        let vector_height = self.vector_area_buckets[vector_bucket_index(u, v)]
+            .iter()
+            .map(|index| &self.vector_areas[*index])
+            .filter(|area| area.building_height_m > 0.0)
+            .filter(|area| point_in_polygon([u, v], &area.points))
+            .map(|area| area.building_height_m)
+            .fold(0.0, f32::max);
+        if self.has_vector_buildings {
+            return vector_height;
+        }
         let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
         let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
         self.building_heights_m[y * self.width + x]
@@ -550,6 +706,108 @@ impl SurfaceField {
         let total = self.classes.len() as f32;
         counts.map(|count| count as f32 * 100.0 / total)
     }
+}
+
+fn surface_area_bounds(points: &[[f32; 2]]) -> [f32; 4] {
+    points.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |bounds, point| {
+            [
+                bounds[0].min(point[0]),
+                bounds[1].min(point[1]),
+                bounds[2].max(point[0]),
+                bounds[3].max(point[1]),
+            ]
+        },
+    )
+}
+
+fn vector_bucket_coordinate(value: f32) -> usize {
+    (value.clamp(0.0, 0.999_999) * VECTOR_BUCKET_COLUMNS as f32) as usize
+}
+
+fn vector_bucket_index(u: f32, v: f32) -> usize {
+    vector_bucket_coordinate(v) * VECTOR_BUCKET_COLUMNS + vector_bucket_coordinate(u)
+}
+
+fn add_to_vector_buckets(buckets: &mut [Vec<usize>], bounds: [f32; 4], feature_index: usize) {
+    let minimum_x = vector_bucket_coordinate(bounds[0]);
+    let minimum_y = vector_bucket_coordinate(bounds[1]);
+    let maximum_x = vector_bucket_coordinate(bounds[2]);
+    let maximum_y = vector_bucket_coordinate(bounds[3]);
+    for y in minimum_y..=maximum_y {
+        for x in minimum_x..=maximum_x {
+            buckets[y * VECTOR_BUCKET_COLUMNS + x].push(feature_index);
+        }
+    }
+}
+
+fn smooth_surface_line(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let mut result = Vec::with_capacity((points.len() - 1) * 4 + 1);
+    for index in 0..points.len() - 1 {
+        let controls = [
+            points[index.saturating_sub(1)],
+            points[index],
+            points[index + 1],
+            points[(index + 2).min(points.len() - 1)],
+        ];
+        for sample in 0..4 {
+            let t = sample as f32 / 4.0;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            result.push([
+                0.5 * (2.0 * controls[1][0]
+                    + (-controls[0][0] + controls[2][0]) * t
+                    + (2.0 * controls[0][0] - 5.0 * controls[1][0] + 4.0 * controls[2][0]
+                        - controls[3][0])
+                        * t2
+                    + (-controls[0][0] + 3.0 * controls[1][0] - 3.0 * controls[2][0]
+                        + controls[3][0])
+                        * t3),
+                0.5 * (2.0 * controls[1][1]
+                    + (-controls[0][1] + controls[2][1]) * t
+                    + (2.0 * controls[0][1] - 5.0 * controls[1][1] + 4.0 * controls[2][1]
+                        - controls[3][1])
+                        * t2
+                    + (-controls[0][1] + 3.0 * controls[1][1] - 3.0 * controls[2][1]
+                        + controls[3][1])
+                        * t3),
+            ]);
+        }
+    }
+    result.push(*points.last().unwrap());
+    result
+}
+
+fn surface_line_contains(line: &VectorSurfaceLine, u: f32, v: f32) -> bool {
+    let point = [
+        u.clamp(0.0, 1.0) * line.model_width_mm,
+        v.clamp(0.0, 1.0) * line.model_height_mm,
+    ];
+    let radius_squared = (line.width_mm * 0.5).powi(2);
+    line.points_mm.windows(2).any(|segment| {
+        let delta = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]];
+        let length_squared = delta[0].powi(2) + delta[1].powi(2);
+        let offset = [point[0] - segment[0][0], point[1] - segment[0][1]];
+        let amount = if length_squared <= f32::EPSILON {
+            0.0
+        } else {
+            ((offset[0] * delta[0] + offset[1] * delta[1]) / length_squared).clamp(0.0, 1.0)
+        };
+        let nearest = [
+            segment[0][0] + delta[0] * amount,
+            segment[0][1] + delta[1] * amount,
+        ];
+        distance_squared(point, nearest) <= radius_squared
+    })
 }
 
 impl HeightField {
@@ -3117,6 +3375,40 @@ mod tests {
     }
 
     #[test]
+    fn vector_lines_are_smooth_and_independent_of_raster_cells() {
+        let mut field =
+            SurfaceField::new(11, 11, vec![SurfaceClass::Forest; 11 * 11], "test").unwrap();
+        field.paint_polyline(
+            &[[0.0, 0.2], [0.5, 0.8], [1.0, 0.2]],
+            20.0,
+            0.4,
+            SurfaceClass::Road,
+        );
+        assert!(field.vector_lines[0].points_mm.len() > 3);
+        assert_eq!(field.at(0.5, 0.8), SurfaceClass::Road);
+        assert_eq!(field.at(0.5, 0.84), SurfaceClass::Forest);
+
+        field.paint_polyline(
+            &[[0.0, 0.1], [0.5, 0.15], [1.0, 0.1]],
+            20.0,
+            0.6,
+            SurfaceClass::Water,
+        );
+        assert_eq!(field.at(0.5, 0.15), SurfaceClass::Water);
+    }
+
+    #[test]
+    fn vector_water_areas_keep_their_exact_boundary() {
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "test").unwrap();
+        field.paint_surface_area(
+            &[[0.45, 0.45], [0.55, 0.45], [0.55, 0.55], [0.45, 0.55]],
+            SurfaceClass::Water,
+        );
+        assert_eq!(field.at(0.5, 0.5), SurfaceClass::Water);
+        assert_eq!(field.at(0.6, 0.5), SurfaceClass::Rock);
+    }
+
+    #[test]
     fn surface_field_paints_scaled_building_heights() {
         let mut field =
             SurfaceField::new(21, 21, vec![SurfaceClass::Rock; 21 * 21], "test").unwrap();
@@ -3125,6 +3417,7 @@ mod tests {
             12.0,
         );
         assert_eq!(field.building_height_at(0.5, 0.5), 12.0);
+        assert_eq!(field.building_height_at(0.76, 0.5), 0.0);
         assert_eq!(field.building_height_at(0.1, 0.1), 0.0);
 
         let spec = GenerationSpec {

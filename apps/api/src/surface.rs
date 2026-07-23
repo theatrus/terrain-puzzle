@@ -22,6 +22,7 @@ const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyrig
 const PROMINENT_HIGHWAYS: &str =
     "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link";
 const FALLBACK_TRAILS: &str = "path|footway|bridleway|track|cycleway";
+const WATERWAYS: &str = "river|stream|canal";
 
 #[derive(Debug)]
 struct SamplePoint {
@@ -62,6 +63,12 @@ struct OverpassPoint {
 struct RouteCounts {
     roads: usize,
     trails: usize,
+}
+
+#[derive(Debug, Default)]
+struct WaterCounts {
+    lines: usize,
+    areas: usize,
 }
 
 pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Result<SurfaceField> {
@@ -114,6 +121,11 @@ pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Resul
     let mut field = SurfaceField::new(width, height, classes, source)?;
     if spec.color_output.enabled {
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
+        let counts = paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
+        field.source.push_str(&format!(
+            "; waterways: {} lines and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+            counts.lines, counts.areas
+        ));
     }
     if spec.color_output.enabled && spec.color_output.roads_enabled {
         let counts = paint_roads_or_trails(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
@@ -142,6 +154,59 @@ pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Resul
         }
     }
     Ok(field)
+}
+
+fn normalized_osm_points(
+    way: &OverpassWay,
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+) -> Vec<[f32; 2]> {
+    way.geometry
+        .iter()
+        .map(|point| {
+            let longitude = unwrap_longitude(point.lon, spec.center_lon);
+            [
+                ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
+                ((point.lat - bounds.south) / (bounds.north - bounds.south)) as f32,
+            ]
+        })
+        .collect()
+}
+
+fn paint_water(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    field: &mut SurfaceField,
+) -> Result<WaterCounts> {
+    let water = fetch_osm_response(spec, cache_dir, "water", water_query(bounds))?;
+    let mut counts = WaterCounts::default();
+    for way in water.elements {
+        if is_water_area(&way.tags) {
+            if way.geometry.len() >= 3 {
+                field.paint_surface_area(
+                    &normalized_osm_points(&way, spec, bounds),
+                    SurfaceClass::Water,
+                );
+                counts.areas += 1;
+            }
+            continue;
+        }
+        if way.geometry.len() < 2 || is_tunnel(&way.tags) {
+            continue;
+        }
+        let Some(width_scale) = waterway_width_scale(&way.tags) else {
+            continue;
+        };
+        field.paint_polyline(
+            &normalized_osm_points(&way, spec, bounds),
+            spec.width_mm,
+            (spec.color_output.road_width_mm * width_scale).max(0.6),
+            SurfaceClass::Water,
+        );
+        counts.lines += 1;
+    }
+    Ok(counts)
 }
 
 fn bounds_for(spec: &GenerationSpec) -> GeoBounds {
@@ -193,17 +258,7 @@ fn paint_osm_ways(
         let Some(scale) = width_scale(&way.tags) else {
             continue;
         };
-        let points = way
-            .geometry
-            .iter()
-            .map(|point| {
-                let longitude = unwrap_longitude(point.lon, spec.center_lon);
-                [
-                    ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
-                    ((point.lat - bounds.south) / (bounds.north - bounds.south)) as f32,
-                ]
-            })
-            .collect::<Vec<_>>();
+        let points = normalized_osm_points(&way, spec, bounds);
         field.paint_polyline(
             &points,
             spec.width_mm,
@@ -227,17 +282,7 @@ fn paint_buildings(
         if building.geometry.len() < 3 {
             continue;
         }
-        let points = building
-            .geometry
-            .iter()
-            .map(|point| {
-                let longitude = unwrap_longitude(point.lon, spec.center_lon);
-                [
-                    ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
-                    ((point.lat - bounds.south) / (bounds.north - bounds.south)) as f32,
-                ]
-            })
-            .collect::<Vec<_>>();
+        let points = normalized_osm_points(&building, spec, bounds);
         field.paint_building(&points, building_height_m(&building.tags));
         painted += 1;
     }
@@ -354,6 +399,18 @@ fn building_query(bounds: GeoBounds) -> String {
     format!("[out:json][timeout:60];({ways});out tags geom;")
 }
 
+fn water_query(bounds: GeoBounds) -> String {
+    let ways = osm_bboxes(bounds)
+        .iter()
+        .map(|(south, west, north, east)| {
+            format!(
+                "way[\"waterway\"~\"^({WATERWAYS})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});way[\"natural\"=\"water\"]({south:.7},{west:.7},{north:.7},{east:.7});way[\"waterway\"=\"riverbank\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+            )
+        })
+        .collect::<String>();
+    format!("[out:json][timeout:30];({ways});out tags geom;")
+}
+
 fn osm_bboxes(bounds: GeoBounds) -> Vec<(f64, f64, f64, f64)> {
     if bounds.west < -180.0 {
         vec![
@@ -390,6 +447,22 @@ fn trail_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
         "path" | "footway" => Some(0.55),
         _ => None,
     }
+}
+
+fn waterway_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
+    match tags.get("waterway")?.as_str() {
+        "river" => Some(1.2),
+        "canal" => Some(0.9),
+        "stream" => Some(0.65),
+        _ => None,
+    }
+}
+
+fn is_water_area(tags: &HashMap<String, String>) -> bool {
+    tags.get("natural").is_some_and(|value| value == "water")
+        || tags
+            .get("waterway")
+            .is_some_and(|value| value == "riverbank")
 }
 
 fn is_tunnel(tags: &HashMap<String, String>) -> bool {
@@ -628,6 +701,29 @@ mod tests {
         let tags = |class: &str| HashMap::from([("highway".into(), class.into())]);
         assert!(trail_width_scale(&tags("track")) > trail_width_scale(&tags("path")));
         assert_eq!(trail_width_scale(&tags("primary")), None);
+    }
+
+    #[test]
+    fn builds_water_queries_and_widths() {
+        let bounds = GeoBounds {
+            south: 46.8,
+            north: 46.9,
+            west: -121.9,
+            east: -121.7,
+        };
+        let query = water_query(bounds);
+        assert!(query.contains("river|stream|canal"));
+        assert!(query.contains("[\"area\"!=\"yes\"]"));
+        assert!(query.contains("[\"natural\"=\"water\"]"));
+        assert!(query.contains("[\"waterway\"=\"riverbank\"]"));
+
+        let tags = |class: &str| HashMap::from([("waterway".into(), class.into())]);
+        assert!(waterway_width_scale(&tags("river")) > waterway_width_scale(&tags("stream")));
+        assert_eq!(waterway_width_scale(&tags("drain")), None);
+        assert!(is_water_area(&HashMap::from([(
+            "natural".into(),
+            "water".into()
+        )])));
     }
 
     #[test]

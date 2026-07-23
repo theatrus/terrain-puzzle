@@ -27,17 +27,19 @@ rock. The first version should use ESA WorldCover 2021 at 10 m resolution:
 - all other classes: rock in the color mode.
 
 OpenStreetMap adds motorway, trunk, primary, and secondary road geometry after
-the land-cover mask is clean. Higher road classes get wider print lines. The
-generator skips tunnels and keeps bridges visible. The default primary-road
-width is 1.0 mm; motorway and trunk lines are wider, while secondary roads and
-links are narrower. If no visible prominent road crosses the model, the
-generator falls back to paths, footways, bridleways, tracks, and cycleways.
-Trails never appear on top of a road network.
+the land-cover mask is clean. It also adds rivers, streams, canals, and mapped
+water areas. Linear features use smooth vector paths rather than raster cells.
+Higher road and waterway classes get wider print lines. The generator skips
+tunnels and keeps bridges visible. The default primary-road width is 1.0 mm;
+motorway and trunk lines are wider, while secondary roads and links are
+narrower. If no visible prominent road crosses the model, the generator falls
+back to paths, footways, bridleways, tracks, and cycleways. Trails never appear
+on top of a road network.
 
 The map is static, so snow means mapped snow or ice rather than current seasonal
-snow. Water includes lakes, reservoirs, and rivers that are wide enough to
-appear in the 10 m data. A later version can add dated Sentinel-2 imagery for
-seasonal snow and vector data for narrower streams.
+snow. WorldCover supplies broad water coverage while OpenStreetMap supplies
+sharper water boundaries and narrower waterways. A later version can add dated
+Sentinel-2 imagery for seasonal snow.
 
 Sources:
 
@@ -85,13 +87,13 @@ Add these core types:
 ```text
 SurfaceClass = Forest | Rock | Snow | Water | Road
 SurfacePalette = colors and filament labels
-SurfaceField = classified raster plus source details
+SurfaceField = classified raster plus indexed vector lines and areas
 ColorOutputSpec = enabled, palette, minimum patch size, side color
 ```
 
-The API fetches land-cover tiles and caches Overpass road responses beside the
-elevation cache. The job manifest records each data set, license, source URL,
-and class mapping.
+The API fetches land-cover tiles and caches Overpass road, trail, water, and
+building responses beside the elevation cache. The job manifest records each
+data set, license, source URL, and class mapping.
 
 Mesh generation classifies top triangles in global assembled coordinates. This
 keeps color boundaries continuous across neighboring pieces. Bottom and side
@@ -120,7 +122,7 @@ Add a **Color terrain** section below the relief controls:
 - minimum color patch size;
 - road output toggle and print width;
 - side and underside color;
-- a note that snow is not live and narrow streams may fall below 10 m.
+- a note that snow is not live and fine map features remain print-width limited.
 
 The terrain preview should use the same class raster as the export. Add a small
 legend and coverage figures, such as `Forest 51% · Rock 31% · Snow 18%`.
@@ -137,7 +139,7 @@ offer a rock-only export rather than silently inventing classes.
 
 ### 2. Land-cover provider
 
-- Fetch ESA WorldCover data and cache OpenStreetMap roads for the selected bounds.
+- Fetch ESA WorldCover data and cache OpenStreetMap vector overlays for the selected bounds.
 - Reproject and sample it beside the elevation field.
 - Record source and license details in the manifest.
 
@@ -169,6 +171,7 @@ offer a rock-only export rather than silently inventing classes.
   and blue where permanent water is mapped.
 - Color boundaries continue across puzzle seams.
 - Road widths follow the selected print width and road class.
+- Roads, trails, and waterways remain smooth when mesh detail increases.
 - The web preview and 3MF triangle classes match.
 - The 3MF opens with five usable colors and no mesh repair.
 - Each piece remains one closed solid.

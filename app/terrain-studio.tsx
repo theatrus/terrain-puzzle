@@ -823,23 +823,28 @@ export function TerrainStudio() {
   const [searchingPlaces, setSearchingPlaces] = useState(false);
 
   const update = useCallback(
-    <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) =>
-      setSpec((current) => ({ ...current, [key]: value })),
+    <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) => {
+      setPreview(null);
+      setSpec((current) => ({ ...current, [key]: value }));
+    },
     [],
   );
   const updateColor = useCallback(
     <Key extends keyof GenerationSpec["color_output"]>(
       key: Key,
       value: GenerationSpec["color_output"][Key],
-    ) =>
+    ) => {
+      setPreview(null);
       setSpec((current) => ({
         ...current,
         color_output: { ...current.color_output, [key]: value },
-      })),
+      }));
+    },
     [],
   );
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
+    setPreview(null);
     setSpec((current) => ({
       ...current,
       center_lat: Number(latitude.toFixed(5)),
@@ -946,15 +951,15 @@ export function TerrainStudio() {
     if (job.status === "failed") return job.error ?? "Generation failed.";
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.progress < 40) return "Sampling global elevation…";
-    if (job.progress < 65 && spec.color_output.enabled) {
-      return spec.color_output.roads_enabled
+    if (job.progress < 65 && job.spec.color_output.enabled) {
+      return job.spec.color_output.roads_enabled
         ? "Mapping land cover, roads, or fallback trails…"
         : "Mapping forest, rock, snow, and water…";
     }
     return job.spec.solid_model
       ? "Building one watertight terrain model…"
       : "Building watertight pieces…";
-  }, [job, spec.color_output.enabled, spec.color_output.roads_enabled]);
+  }, [job]);
 
   return (
     <main className="studio">
@@ -1257,13 +1262,14 @@ export function TerrainStudio() {
                   spec.rows === count && spec.columns === count ? "active" : ""
                 }
                 key={count}
-                onClick={() =>
+                onClick={() => {
+                  setPreview(null);
                   setSpec((current) => ({
                     ...current,
                     rows: count,
                     columns: count,
-                  }))
-                }
+                  }));
+                }}
               >
                 <span
                   className="mini-grid"

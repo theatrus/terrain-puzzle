@@ -446,41 +446,42 @@ fn generate_project_inner(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
 
-    let mut meshes = Vec::with_capacity(if spec.solid_model {
+    let object_count = if spec.solid_model {
         1
     } else {
         (spec.rows * spec.columns) as usize
-    });
-    if spec.solid_model {
-        meshes.push(build_piece(spec, height_field, surface_field, 0, 0)?);
-    } else {
-        for row in 0..spec.rows {
-            for column in 0..spec.columns {
-                meshes.push(build_piece(spec, height_field, surface_field, row, column)?);
-            }
-        }
-    }
+    };
 
     let mut artifacts = Vec::new();
-    for (index, mesh) in meshes.iter().enumerate() {
-        let row = index as u32 / spec.columns + 1;
-        let column = index as u32 % spec.columns + 1;
-        let name = if spec.solid_model {
-            "terrain-solid.stl".into()
-        } else {
-            format!("piece-{row}-{column}.stl")
-        };
-        let path = output_dir.join(&name);
-        write_binary_stl(mesh, &path)?;
-        artifacts.push(file_artifact(&path, "model/stl")?);
-    }
-
     let project_path = output_dir.join(if spec.solid_model {
         "terrain-solid.3mf"
     } else {
         "terrain-puzzle.3mf"
     });
-    write_3mf(spec, &meshes, &project_path)?;
+    let mut project_writer = ThreeMfWriter::new(spec, &project_path)?;
+    for index in 0..object_count {
+        let row = if spec.solid_model {
+            0
+        } else {
+            index as u32 / spec.columns
+        };
+        let column = if spec.solid_model {
+            0
+        } else {
+            index as u32 % spec.columns
+        };
+        let mesh = build_piece(spec, height_field, surface_field, row, column)?;
+        let name = if spec.solid_model {
+            "terrain-solid.stl".into()
+        } else {
+            format!("piece-{}-{}.stl", row + 1, column + 1)
+        };
+        let path = output_dir.join(&name);
+        write_binary_stl(&mesh, &path)?;
+        artifacts.push(file_artifact(&path, "model/stl")?);
+        project_writer.write_mesh(&mesh)?;
+    }
+    project_writer.finish()?;
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
     let preview_path = output_dir.join("preview.json");
@@ -1152,114 +1153,149 @@ fn face_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     [cross[0] / length, cross[1] / length, cross[2] / length]
 }
 
-fn write_3mf(spec: &GenerationSpec, meshes: &[Mesh], path: &Path) -> Result<()> {
-    let file = File::create(path).with_context(|| format!("create 3MF {}", path.display()))?;
-    let mut zip = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+struct ThreeMfWriter<'a> {
+    zip: ZipWriter<File>,
+    spec: &'a GenerationSpec,
+    object_count: usize,
+}
 
-    zip.start_file("[Content_Types].xml", options)?;
-    zip.write_all(
-        br#"<?xml version="1.0" encoding="UTF-8"?>
+const COLOR_GROUP_ID: u32 = 1000;
+
+impl<'a> ThreeMfWriter<'a> {
+    fn new(spec: &'a GenerationSpec, path: &Path) -> Result<Self> {
+        let file = File::create(path).with_context(|| format!("create 3MF {}", path.display()))?;
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        zip.start_file("[Content_Types].xml", options)?;
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
 </Types>"#,
-    )?;
+        )?;
 
-    zip.add_directory("_rels/", options)?;
-    zip.start_file("_rels/.rels", options)?;
-    zip.write_all(
+        zip.add_directory("_rels/", options)?;
+        zip.start_file("_rels/.rels", options)?;
+        zip.write_all(
         br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#,
     )?;
 
-    let mut model = if spec.color_output.enabled {
-        String::from(
+        zip.add_directory("3D/", options)?;
+        zip.start_file("3D/3dmodel.model", options)?;
+        if spec.color_output.enabled {
+            zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="m">
   <metadata name="Title">Terrain Puzzle</metadata>
   <metadata name="Designer">Terrain Puzzle Generator</metadata>
   <resources>
-"#,
-        )
-    } else {
-        String::from(
+"#
+                .as_bytes(),
+            )?;
+        } else {
+            zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
   <metadata name="Title">Terrain Puzzle</metadata>
   <metadata name="Designer">Terrain Puzzle Generator</metadata>
   <resources>
-"#,
-        )
-    };
-    const COLOR_GROUP_ID: u32 = 1000;
-    if spec.color_output.enabled {
-        model.push_str(&format!(
-            "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>\n",
-            spec.color_output.rock_color,
-            spec.color_output.forest_color,
-            spec.color_output.snow_color,
-            spec.color_output.water_color,
-            spec.color_output.road_color,
-        ));
+"#
+                .as_bytes(),
+            )?;
+        }
+        if spec.color_output.enabled {
+            writeln!(
+                zip,
+                "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>",
+                spec.color_output.rock_color,
+                spec.color_output.forest_color,
+                spec.color_output.snow_color,
+                spec.color_output.water_color,
+                spec.color_output.road_color,
+            )?;
+        }
+        Ok(Self {
+            zip,
+            spec,
+            object_count: 0,
+        })
     }
 
-    for (index, mesh) in meshes.iter().enumerate() {
+    fn write_mesh(&mut self, mesh: &Mesh) -> Result<()> {
         debug_assert_eq!(mesh.triangles.len(), mesh.materials.len());
-        model.push_str(&format!(
-            "    <object id=\"{}\" name=\"{}\" type=\"model\"><mesh><vertices>\n",
-            index + 1,
+        let object_id = self.object_count + 1;
+        let mut output = BufWriter::with_capacity(64 * 1024, &mut self.zip);
+        writeln!(
+            output,
+            "    <object id=\"{object_id}\" name=\"{}\" type=\"model\"><mesh><vertices>",
             mesh.name
-        ));
+        )?;
         for vertex in &mesh.vertices {
-            model.push_str(&format!(
-                "      <vertex x=\"{:.5}\" y=\"{:.5}\" z=\"{:.5}\"/>\n",
+            writeln!(
+                output,
+                "      <vertex x=\"{:.5}\" y=\"{:.5}\" z=\"{:.5}\"/>",
                 vertex[0], vertex[1], vertex[2]
-            ));
+            )?;
         }
-        model.push_str("    </vertices><triangles>\n");
+        output.write_all(b"    </vertices><triangles>\n")?;
         for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
-            if spec.color_output.enabled {
+            if self.spec.color_output.enabled {
                 let index = material.material_index();
-                model.push_str(&format!(
-                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\"/>\n",
+                writeln!(
+                    output,
+                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\"/>",
                     triangle[0], triangle[1], triangle[2],
-                ));
+                )?;
             } else {
-                model.push_str(&format!(
-                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
+                writeln!(
+                    output,
+                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
                     triangle[0], triangle[1], triangle[2]
-                ));
+                )?;
             }
         }
-        model.push_str("    </triangles></mesh></object>\n");
+        output.write_all(b"    </triangles></mesh></object>\n")?;
+        output.flush()?;
+        self.object_count += 1;
+        Ok(())
     }
-    model.push_str("  </resources>\n  <build>\n");
 
-    let piece_width = spec.width_mm / spec.columns as f32;
-    let piece_height = spec.height_mm() / spec.rows as f32;
-    let spacing = piece_width.min(piece_height) * 0.3;
-    for (index, _) in meshes.iter().enumerate() {
-        let row = index as u32 / spec.columns;
-        let column = index as u32 % spec.columns;
-        let tx = column as f32 * (piece_width + spacing);
-        let ty = row as f32 * (piece_height + spacing);
-        model.push_str(&format!(
-            "    <item objectid=\"{}\" transform=\"1 0 0 0 1 0 0 0 1 {:.5} {:.5} 0\"/>\n",
-            index + 1,
-            tx,
-            ty
-        ));
+    fn finish(mut self) -> Result<()> {
+        self.zip.write_all(b"  </resources>\n  <build>\n")?;
+        let piece_width = self.spec.width_mm / self.spec.columns as f32;
+        let piece_height = self.spec.height_mm() / self.spec.rows as f32;
+        let spacing = piece_width.min(piece_height) * 0.3;
+        for index in 0..self.object_count {
+            let row = if self.spec.solid_model {
+                0
+            } else {
+                index as u32 / self.spec.columns
+            };
+            let column = if self.spec.solid_model {
+                0
+            } else {
+                index as u32 % self.spec.columns
+            };
+            let tx = column as f32 * (piece_width + spacing);
+            let ty = row as f32 * (piece_height + spacing);
+            writeln!(
+                self.zip,
+                "    <item objectid=\"{}\" transform=\"1 0 0 0 1 0 0 0 1 {:.5} {:.5} 0\"/>",
+                index + 1,
+                tx,
+                ty
+            )?;
+        }
+        self.zip.write_all(b"  </build>\n</model>")?;
+        self.zip.finish()?;
+        Ok(())
     }
-    model.push_str("  </build>\n</model>");
-
-    zip.add_directory("3D/", options)?;
-    zip.start_file("3D/3dmodel.model", options)?;
-    zip.write_all(model.as_bytes())?;
-    zip.finish()?;
-    Ok(())
 }
 
 fn file_artifact(path: &Path, media_type: &str) -> Result<Artifact> {
@@ -1508,6 +1544,8 @@ mod tests {
         assert!(model.contains("p1=\"2\""));
         assert!(model.contains("p1=\"3\""));
         assert!(model.contains("p1=\"4\""));
+        assert_eq!(model.matches("<object id=").count(), 4);
+        assert_eq!(model.matches("<item objectid=").count(), 4);
 
         let preview: serde_json::Value =
             serde_json::from_slice(&std::fs::read(output_dir.join("preview.json")).unwrap())

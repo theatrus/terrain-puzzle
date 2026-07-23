@@ -372,7 +372,9 @@ async fn download(
     State(state): State<AppState>,
     AxumPath((id, name)): AxumPath<(String, String)>,
 ) -> Result<Response, (StatusCode, Json<ApiError>)> {
-    let output_dir = state.jobs_dir.join(&id);
+    let id = canonical_job_id(&id)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "artifact not found"))?;
+    let output_dir = state.jobs_dir.join(id);
     let path = artifact_path(&output_dir, &name)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "artifact not found"))?;
     let bytes = tokio::fs::read(&path).await.map_err(internal_error)?;
@@ -392,6 +394,12 @@ async fn download(
             .map_err(internal_error)?,
     );
     Ok(response)
+}
+
+fn canonical_job_id(id: &str) -> Option<String> {
+    Uuid::parse_str(id)
+        .ok()
+        .map(|value| value.hyphenated().to_string())
 }
 
 fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
@@ -555,5 +563,16 @@ mod tests {
             panic_message(Box::new("triangulation failed")),
             "mesh generation panicked: triangulation failed"
         );
+    }
+
+    #[test]
+    fn artifact_downloads_require_uuid_job_directories() {
+        assert_eq!(
+            canonical_job_id("395481ef-0e39-4d94-9d94-2c39fea86000").as_deref(),
+            Some("395481ef-0e39-4d94-9d94-2c39fea86000")
+        );
+        assert_eq!(canonical_job_id(".."), None);
+        assert_eq!(canonical_job_id("../data"), None);
+        assert_eq!(canonical_job_id("not-a-job"), None);
     }
 }

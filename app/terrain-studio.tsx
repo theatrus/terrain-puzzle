@@ -181,6 +181,10 @@ const initialSpec: GenerationSpec = {
 
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
+const MIN_MAP_ZOOM = 2;
+const MAX_MAP_ZOOM = 15;
+const MIN_GROUND_SPAN_KM = 1;
+const MAX_GROUND_SPAN_KM = 80;
 
 function projectToWorld(longitude: number, latitude: number, zoom: number) {
   const scale = TILE_SIZE * 2 ** zoom;
@@ -214,9 +218,11 @@ function unprojectFromWorld(x: number, y: number, zoom: number) {
 function TerrainMap({
   spec,
   onCenterChange,
+  onGroundSpanChange,
 }: {
   spec: GenerationSpec;
   onCenterChange: (longitude: number, latitude: number) => void;
+  onGroundSpanChange: (groundSpanKm: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
@@ -279,12 +285,15 @@ function TerrainMap({
       Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
     2 ** zoom;
   const selectionSize = Math.max(
-    18,
+    8,
     Math.min(
-      Math.min(size.width, size.height) * 0.82,
+      Math.min(size.width, size.height) * 0.94,
       (spec.ground_span_km * 1000) / metresPerPixel,
     ),
   );
+  const groundSpanLabel = Number.isInteger(spec.ground_span_km)
+    ? spec.ground_span_km.toFixed(0)
+    : spec.ground_span_km.toFixed(1);
 
   const moveToWorld = useCallback(
     (worldX: number, worldY: number) =>
@@ -324,12 +333,38 @@ function TerrainMap({
     onCenterChange(next.longitude, next.latitude);
   };
 
+  const changeZoom = useCallback(
+    (delta: number) => {
+      const nextZoom = Math.max(
+        MIN_MAP_ZOOM,
+        Math.min(MAX_MAP_ZOOM, zoom + delta),
+      );
+      if (nextZoom === zoom) return;
+      const nextGroundSpan =
+        spec.ground_span_km * 2 ** (zoom - nextZoom);
+      if (
+        nextGroundSpan < MIN_GROUND_SPAN_KM ||
+        nextGroundSpan > MAX_GROUND_SPAN_KM
+      ) {
+        return;
+      }
+      setZoom(nextZoom);
+      onGroundSpanChange(Math.round(nextGroundSpan));
+    },
+    [onGroundSpanChange, spec.ground_span_km, zoom],
+  );
+
   const wheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     event.preventDefault();
-    setZoom((current) =>
-      Math.max(2, Math.min(15, current + (event.deltaY < 0 ? 1 : -1))),
-    );
+    changeZoom(event.deltaY < 0 ? 1 : -1);
   };
+
+  const canZoomIn =
+    zoom < MAX_MAP_ZOOM &&
+    spec.ground_span_km / 2 >= MIN_GROUND_SPAN_KM;
+  const canZoomOut =
+    zoom > MIN_MAP_ZOOM &&
+    spec.ground_span_km * 2 <= MAX_GROUND_SPAN_KM;
 
   return (
     <div className="map-shell">
@@ -362,21 +397,29 @@ function TerrainMap({
         </div>
         <div
           className="map-selection"
+          aria-label={`Selected terrain area: ${groundSpanLabel} km square`}
+          data-ground-span-km={spec.ground_span_km}
+          data-map-zoom={zoom}
+          role="img"
           style={{ height: selectionSize, width: selectionSize }}
-        />
+        >
+          <span>{groundSpanLabel} km</span>
+        </div>
       </div>
       <div className="map-zoom" aria-label="Map zoom">
         <button
           type="button"
           aria-label="Zoom in"
-          onClick={() => setZoom((current) => Math.min(15, current + 1))}
+          disabled={!canZoomIn}
+          onClick={() => changeZoom(1)}
         >
           +
         </button>
         <button
           type="button"
           aria-label="Zoom out"
-          onClick={() => setZoom((current) => Math.max(2, current - 1))}
+          disabled={!canZoomOut}
+          onClick={() => changeZoom(-1)}
         >
           −
         </button>
@@ -1597,7 +1640,13 @@ export function TerrainStudio() {
         }
       >
         <section className="visual-column" aria-label="Place and model preview">
-          <TerrainMap spec={spec} onCenterChange={onCenterChange} />
+          <TerrainMap
+            spec={spec}
+            onCenterChange={onCenterChange}
+            onGroundSpanChange={(groundSpanKm) =>
+              update("ground_span_km", groundSpanKm)
+            }
+          />
           <ReliefPreview
             spec={spec}
             preview={preview}

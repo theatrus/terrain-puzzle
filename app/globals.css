@@ -246,6 +246,19 @@ a {
   z-index: 2;
 }
 
+.map-selection span {
+  background: var(--acid);
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 760;
+  left: 50%;
+  padding: 3px 6px;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+}
+
 .map-shell::after {
   background: linear-gradient(180deg, rgba(20, 32, 29, 0.03), rgba(20, 32, 29, 0.18));
   content: "";
@@ -320,6 +333,11 @@ a {
   line-height: 1;
   padding: 0;
   width: 34px;
+}
+
+.map-zoom button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .map-zoom button + button {

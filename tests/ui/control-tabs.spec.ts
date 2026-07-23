@@ -152,6 +152,43 @@ test("resizes the preview area to make room for controls", async ({ page }) => {
     .toBeGreaterThan(28);
 });
 
+test("keeps map zoom and ground span in sync", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const groundSpan = page.getByRole("slider", { name: "Ground span" });
+  const selection = page.locator(".map-selection");
+  await expect(selection).toHaveAttribute(
+    "aria-label",
+    "Selected terrain area: 18 km square",
+  );
+  const initialBounds = await selection.boundingBox();
+  expect(initialBounds).not.toBeNull();
+  await expect(selection).toHaveAttribute("data-map-zoom", "9");
+
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(groundSpan).toHaveValue("9");
+  await expect(selection).toHaveAttribute(
+    "aria-label",
+    "Selected terrain area: 9 km square",
+  );
+  await expect(selection).toHaveAttribute("data-map-zoom", "10");
+
+  const zoomedBounds = await selection.boundingBox();
+  expect(zoomedBounds).not.toBeNull();
+  expect(zoomedBounds!.width).toBeCloseTo(initialBounds!.width, 0);
+
+  await groundSpan.fill("30");
+  await expect(selection).toHaveAttribute(
+    "aria-label",
+    "Selected terrain area: 30 km square",
+  );
+  await expect(selection).toHaveAttribute("data-ground-span-km", "30");
+  const largerBounds = await selection.boundingBox();
+  expect(largerBounds).not.toBeNull();
+  expect(largerBounds!.width).toBeGreaterThan(zoomedBounds!.width);
+});
+
 test("rotates, zooms, and resets the interactive 3D preview", async ({
   page,
 }) => {

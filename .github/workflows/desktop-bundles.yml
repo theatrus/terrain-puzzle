@@ -77,3 +77,34 @@ jobs:
           args: --bundles ${{ matrix.bundles }}
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: toposaic-[platform]-[arch]-[bundle]
+
+      - name: Verify static MSVC runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $installation) {
+            throw "Could not find the Visual C++ build tools."
+          }
+
+          $dumpbin = Get-ChildItem "$installation\VC\Tools\MSVC" `
+            -Filter dumpbin.exe -Recurse |
+            Where-Object FullName -Match 'Hostx64\\x64\\dumpbin\.exe$' |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if (-not $dumpbin) {
+            throw "Could not find dumpbin.exe."
+          }
+
+          $imports = & $dumpbin.FullName /DEPENDENTS `
+            "target\release\toposaic-desktop.exe" 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "dumpbin could not inspect the Windows executable."
+          }
+          $imports
+          if ($imports -Match '(?i)(VCRUNTIME|MSVCP|CONCRT|api-ms-win-crt-|ucrtbase).*\.dll') {
+            throw "The Windows executable still depends on an external MSVC runtime."
+          }

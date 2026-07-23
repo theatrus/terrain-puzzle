@@ -6,6 +6,7 @@ use std::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    thread,
     time::Duration,
 };
 
@@ -29,6 +30,8 @@ const PROMINENT_HIGHWAYS: &str =
     "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link";
 const FALLBACK_TRAILS: &str = "path|footway|bridleway|track|cycleway";
 const WATERWAYS: &str = "river|stream|canal";
+const OVERPASS_ATTEMPTS: usize = 2;
+const OVERPASS_RETRY_DELAY: Duration = Duration::from_millis(750);
 static OVERPASS_REQUEST_LOCK: Mutex<()> = Mutex::new(());
 static PREFERRED_OVERPASS_ENDPOINT: AtomicUsize = AtomicUsize::new(0);
 
@@ -51,6 +54,8 @@ struct GeoBounds {
 struct OverpassResponse {
     #[serde(default)]
     elements: Vec<OverpassWay>,
+    #[serde(default)]
+    remark: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,74 +419,85 @@ fn fetch_osm_response(
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create OpenStreetMap cache {}", cache_dir.display()))?;
     let cache_path = osm_cache_path(spec, cache_dir, cache_prefix);
-    let (bytes, should_cache) = match fs::read(&cache_path) {
-        Ok(bytes) => (bytes, false),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let _request_guard = OVERPASS_REQUEST_LOCK
-                .lock()
-                .map_err(|_| anyhow::anyhow!("OpenStreetMap request lock was poisoned"))?;
-            if let Some(bytes) = read_cache_after_wait(&cache_path)? {
-                return parse_osm_response(bytes, cache_prefix);
-            }
-            let client = Client::builder()
-                .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
-                .timeout(Duration::from_secs(45))
-                .build()
-                .context("build OpenStreetMap road client")?;
-            let configured_url = env::var("OVERPASS_BASE_URL").ok();
-            let preferred_endpoint = PREFERRED_OVERPASS_ENDPOINT.load(Ordering::Relaxed);
-            let urls = overpass_urls(configured_url.as_deref(), preferred_endpoint);
-            let mut failures = Vec::new();
-            let mut bytes = None;
-            for (endpoint_index, base_url) in urls {
-                match client
-                    .post(base_url)
-                    .form(&[("data", query.as_str())])
-                    .send()
-                {
-                    Ok(response) if response.status().is_success() => match response.bytes() {
-                        Ok(response_bytes) => {
-                            bytes = Some(response_bytes.to_vec());
-                            if configured_url.is_none() {
-                                PREFERRED_OVERPASS_ENDPOINT
-                                    .store(endpoint_index, Ordering::Relaxed);
+    if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
+        return Ok(response);
+    }
+    let _request_guard = OVERPASS_REQUEST_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("OpenStreetMap request lock was poisoned"))?;
+    if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
+        return Ok(response);
+    }
+
+    let client = Client::builder()
+        .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .timeout(Duration::from_secs(45))
+        .build()
+        .context("build OpenStreetMap client")?;
+    let configured_url = env::var("OVERPASS_BASE_URL").ok();
+    let preferred_endpoint = PREFERRED_OVERPASS_ENDPOINT.load(Ordering::Relaxed);
+    let urls = overpass_urls(configured_url.as_deref(), preferred_endpoint);
+    let mut failures = Vec::new();
+    for attempt in 0..OVERPASS_ATTEMPTS {
+        if attempt > 0 {
+            thread::sleep(OVERPASS_RETRY_DELAY);
+        }
+        for &(endpoint_index, base_url) in &urls {
+            match client
+                .post(base_url)
+                .form(&[("data", query.as_str())])
+                .send()
+            {
+                Ok(response) if response.status().is_success() => match response.bytes() {
+                    Ok(response_bytes) => {
+                        let bytes = response_bytes.to_vec();
+                        match parse_osm_response(&bytes, cache_prefix) {
+                            Ok(parsed) => {
+                                if configured_url.is_none() {
+                                    PREFERRED_OVERPASS_ENDPOINT
+                                        .store(endpoint_index, Ordering::Relaxed);
+                                }
+                                if let Err(error) = cache::store(&cache_path, &bytes) {
+                                    warn!(
+                                        %error,
+                                        path = %cache_path.display(),
+                                        "could not cache OpenStreetMap response; using downloaded data"
+                                    );
+                                }
+                                return Ok(parsed);
                             }
-                            break;
+                            Err(error) => failures.push(format!("{base_url}: {error:#}")),
                         }
-                        Err(error) => failures.push(format!("{base_url}: {error}")),
-                    },
-                    Ok(response) => {
-                        failures.push(format!("{base_url}: HTTP {}", response.status()))
                     }
                     Err(error) => failures.push(format!("{base_url}: {error}")),
-                }
+                },
+                Ok(response) => failures.push(format!("{base_url}: HTTP {}", response.status())),
+                Err(error) => failures.push(format!("{base_url}: {error}")),
             }
-            let bytes = bytes.with_context(|| {
-                format!(
-                    "OpenStreetMap Overpass rejected the {cache_prefix} request ({})",
-                    failures.join("; ")
-                )
-            })?;
-            (bytes, true)
         }
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("read OpenStreetMap cache {}", cache_path.display()));
-        }
-    };
-    if should_cache && let Err(error) = cache::store(&cache_path, &bytes) {
-        warn!(
-            %error,
-            path = %cache_path.display(),
-            "could not cache OpenStreetMap response; using downloaded data"
-        );
     }
-    parse_osm_response(bytes, cache_prefix)
+    bail!(
+        "OpenStreetMap Overpass rejected the {cache_prefix} request after {OVERPASS_ATTEMPTS} attempts ({})",
+        failures.join("; ")
+    )
 }
 
-fn read_cache_after_wait(cache_path: &Path) -> Result<Option<Vec<u8>>> {
+fn read_cached_osm_response(
+    cache_path: &Path,
+    cache_prefix: &str,
+) -> Result<Option<OverpassResponse>> {
     match fs::read(cache_path) {
-        Ok(bytes) => Ok(Some(bytes)),
+        Ok(bytes) => match parse_osm_response(&bytes, cache_prefix) {
+            Ok(response) => Ok(Some(response)),
+            Err(error) => {
+                warn!(
+                    %error,
+                    path = %cache_path.display(),
+                    "ignoring incomplete OpenStreetMap cache entry"
+                );
+                Ok(None)
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => {
             Err(error).with_context(|| format!("read OpenStreetMap cache {}", cache_path.display()))
@@ -489,9 +505,13 @@ fn read_cache_after_wait(cache_path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn parse_osm_response(bytes: Vec<u8>, cache_prefix: &str) -> Result<OverpassResponse> {
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse OpenStreetMap Overpass {cache_prefix} response"))
+fn parse_osm_response(bytes: &[u8], cache_prefix: &str) -> Result<OverpassResponse> {
+    let response: OverpassResponse = serde_json::from_slice(bytes)
+        .with_context(|| format!("parse OpenStreetMap Overpass {cache_prefix} response"))?;
+    if let Some(remark) = response.remark.as_deref() {
+        bail!("OpenStreetMap Overpass returned incomplete {cache_prefix} data: {remark}");
+    }
+    Ok(response)
 }
 
 fn overpass_urls(configured_url: Option<&str>, preferred_endpoint: usize) -> Vec<(usize, &str)> {
@@ -906,6 +926,15 @@ mod tests {
             overpass_urls(Some("http://127.0.0.1:1234/api/interpreter"), 1),
             vec![(0, "http://127.0.0.1:1234/api/interpreter")]
         );
+    }
+
+    #[test]
+    fn rejects_partial_overpass_responses_with_timeout_remarks() {
+        let partial = br#"{"remark":"runtime error: Query timed out","elements":[{"type":"way"}]}"#;
+        let error = parse_osm_response(partial, "buildings").unwrap_err();
+        assert!(error.to_string().contains("incomplete buildings data"));
+        assert!(error.to_string().contains("Query timed out"));
+        assert!(parse_osm_response(br#"{"elements":[]}"#, "buildings").is_ok());
     }
 
     #[test]

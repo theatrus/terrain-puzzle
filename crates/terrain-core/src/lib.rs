@@ -24,6 +24,7 @@ pub struct GenerationSpec {
     pub relief_mm: f32,
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
+    pub overlay_samples_per_piece: u32,
     pub solid_model: bool,
     pub place_name: String,
     pub tray: TraySpec,
@@ -44,6 +45,7 @@ impl Default for GenerationSpec {
             relief_mm: 14.0,
             clearance_mm: 0.14,
             samples_per_piece: 64,
+            overlay_samples_per_piece: 112,
             solid_model: false,
             place_name: "Mount Rainier".into(),
             tray: TraySpec::default(),
@@ -82,6 +84,9 @@ impl GenerationSpec {
         if !(16..=160).contains(&self.samples_per_piece) {
             bail!("samples per piece must be between 16 and 160");
         }
+        if !(32..=192).contains(&self.overlay_samples_per_piece) {
+            bail!("overlay samples per piece must be between 32 and 192");
+        }
         if self.place_name.trim().is_empty() || self.place_name.chars().count() > 48 {
             bail!("place label must contain between 1 and 48 characters");
         }
@@ -96,6 +101,14 @@ impl GenerationSpec {
 
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
+    }
+
+    pub fn effective_samples_per_piece(&self) -> u32 {
+        if self.color_output.enabled || self.buildings.enabled {
+            self.samples_per_piece.max(self.overlay_samples_per_piece)
+        } else {
+            self.samples_per_piece
+        }
     }
 }
 
@@ -195,6 +208,7 @@ pub struct ColorOutputSpec {
     pub road_color: String,
     pub roads_enabled: bool,
     pub road_width_mm: f32,
+    pub road_height_mm: f32,
     pub minimum_patch_mm: f32,
 }
 
@@ -209,6 +223,7 @@ impl Default for ColorOutputSpec {
             road_color: "#D8A33C".into(),
             roads_enabled: true,
             road_width_mm: 1.0,
+            road_height_mm: 0.2,
             minimum_patch_mm: 1.2,
         }
     }
@@ -229,6 +244,9 @@ impl ColorOutputSpec {
         }
         if !(0.6..=5.0).contains(&self.road_width_mm) {
             bail!("road line width must be between 0.6 and 5 mm");
+        }
+        if !(0.08..=0.4).contains(&self.road_height_mm) {
+            bail!("road layer height must be between 0.08 and 0.4 mm");
         }
         if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
             bail!("minimum color patch must be between 0.4 and 8 mm");
@@ -1142,8 +1160,8 @@ fn generate_project_inner(
     }
 
     let preview_path = output_dir.join("preview.json");
-    let preview_size =
-        (spec.rows.max(spec.columns) * spec.samples_per_piece + 1).clamp(96, 160) as usize;
+    let preview_size = (spec.rows.max(spec.columns) * spec.effective_samples_per_piece() + 1)
+        .clamp(96, 192) as usize;
     let preview = build_preview(spec, height_field, surface_field, preview_size);
     fs::write(&preview_path, serde_json::to_vec(&preview)?)
         .with_context(|| format!("write {}", preview_path.display()))?;
@@ -1176,11 +1194,12 @@ fn build_piece(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
-    let samples = if spec.solid_model {
+    let base_samples = if spec.solid_model {
         (spec.samples_per_piece * 2).clamp(96, 256) as usize
     } else {
         spec.samples_per_piece as usize
     };
+    let samples = base_samples.max(spec.effective_samples_per_piece() as usize);
     let piece_width = if spec.solid_model {
         spec.width_mm
     } else {
@@ -1271,6 +1290,12 @@ fn build_piece(
                             spec.center_lon,
                         )
                     + building_height_mm(
+                        spec,
+                        surface_field,
+                        assembled_x / assembled_width,
+                        assembled_y / assembled_height,
+                    )
+                    + road_height_mm(
                         spec,
                         surface_field,
                         assembled_x / assembled_width,
@@ -1736,6 +1761,21 @@ fn building_height_mm(
     height_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0) * spec.buildings.z_scale
 }
 
+fn road_height_mm(
+    spec: &GenerationSpec,
+    surface_field: Option<&SurfaceField>,
+    u: f32,
+    v: f32,
+) -> f32 {
+    if !spec.color_output.enabled || !spec.color_output.roads_enabled {
+        return 0.0;
+    }
+    surface_field
+        .filter(|field| field.at(u, v) == SurfaceClass::Road)
+        .map(|_| spec.color_output.road_height_mm)
+        .unwrap_or(0.0)
+}
+
 fn build_preview(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
@@ -1753,7 +1793,8 @@ fn build_preview(
                 normalized_height(height_field, range, u, v, spec.center_lat, spec.center_lon);
             let building =
                 building_height_mm(spec, surface_field, u, v) / spec.relief_mm.max(f32::EPSILON);
-            heights.push(terrain + building);
+            let road = road_height_mm(spec, surface_field, u, v) / spec.relief_mm.max(f32::EPSILON);
+            heights.push(terrain + building + road);
             if let (Some(field), Some(classes)) = (surface_field, surface_classes.as_mut()) {
                 classes.push(field.at(u, v).material_index());
             }
@@ -2354,6 +2395,7 @@ mod tests {
         }))
         .unwrap();
         assert!(!spec.solid_model);
+        assert_eq!(spec.overlay_samples_per_piece, 112);
         assert_eq!(spec.place_name, "Mount Rainier");
         assert!(!spec.tray.enabled);
         assert!(!spec.buildings.enabled);
@@ -2362,6 +2404,7 @@ mod tests {
         assert_eq!(spec.color_output.road_color, "#D8A33C");
         assert!(spec.color_output.roads_enabled);
         assert_eq!(spec.color_output.road_width_mm, 1.0);
+        assert_eq!(spec.color_output.road_height_mm, 0.2);
     }
 
     #[test]
@@ -2396,6 +2439,61 @@ mod tests {
             ..GenerationSpec::default()
         };
         assert!((building_height_mm(&spec, Some(&field), 0.5, 0.5) - 2.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn overlays_use_their_independent_detail_level() {
+        let mut spec = GenerationSpec::default();
+        assert_eq!(spec.effective_samples_per_piece(), 64);
+        spec.color_output.enabled = true;
+        assert_eq!(spec.effective_samples_per_piece(), 112);
+        spec.overlay_samples_per_piece = 48;
+        assert_eq!(spec.effective_samples_per_piece(), 64);
+    }
+
+    #[test]
+    fn roads_raise_the_mesh_by_one_layer() {
+        let road_field = SurfaceField::new(3, 3, vec![SurfaceClass::Road; 9], "roads").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                road_height_mm: 0.2,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let raised = build_piece(&spec, None, Some(&road_field), 0, 0).unwrap();
+        let flat = build_piece(
+            &GenerationSpec {
+                color_output: ColorOutputSpec {
+                    roads_enabled: false,
+                    ..spec.color_output.clone()
+                },
+                ..spec.clone()
+            },
+            None,
+            Some(&road_field),
+            0,
+            0,
+        )
+        .unwrap();
+        let raised_top = raised
+            .vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let flat_top = flat
+            .vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((raised_top - flat_top - 0.2).abs() < 0.001);
     }
 
     #[test]

@@ -28,7 +28,14 @@ forest, rock, snow, and water colors. It also reads prominent roads from
 OpenStreetMap through Overpass, then draws motorway, trunk, primary, and
 secondary roads at print-safe widths. If none cross the selected area, it draws
 paths, footways, bridleways, tracks, and cycleways as a trail fallback. The 3MF
-stores standard triangle color properties. STL files stay single-color.
+stores standard triangle color properties. Roads also rise by one configurable
+print-layer height, which defaults to 0.2 mm. STL files stay single-color but
+retain the raised road geometry.
+
+Overlay detail is separate from the base terrain setting. It defaults to 112
+samples per piece and can rise to 192, giving roads, buildings, water, snow,
+forest, and rock boundaries a finer mesh without forcing the same setting on
+plain terrain jobs.
 
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z

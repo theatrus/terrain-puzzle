@@ -18,8 +18,9 @@ const TILE_BASE_URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terra
 const ATTRIBUTION_URL: &str = "https://github.com/tilezen/joerd/blob/master/docs/attribution.md";
 
 pub fn fetch_height_field(spec: &GenerationSpec, cache_dir: &Path) -> Result<HeightField> {
-    let sample_width = (spec.columns * spec.samples_per_piece + 1) as usize;
-    let sample_height = (spec.rows * spec.samples_per_piece + 1) as usize;
+    let samples = spec.effective_samples_per_piece();
+    let sample_width = (spec.columns * samples + 1) as usize;
+    let sample_height = (spec.rows * samples + 1) as usize;
     let zoom = choose_zoom(spec, sample_width.max(sample_height));
     let client = Client::builder()
         .user_agent("terrain-puzzle/0.1 (+local terrain mesh generator)")

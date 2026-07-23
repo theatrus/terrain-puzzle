@@ -65,8 +65,9 @@ struct RouteCounts {
 }
 
 pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Result<SurfaceField> {
-    let width = (spec.columns * spec.samples_per_piece + 1) as usize;
-    let height = (spec.rows * spec.samples_per_piece + 1) as usize;
+    let samples = spec.effective_samples_per_piece();
+    let width = (spec.columns * samples + 1) as usize;
+    let height = (spec.rows * samples + 1) as usize;
     let bounds = bounds_for(spec);
     let mut classes = vec![SurfaceClass::Rock; width * height];
     let mut source = String::new();

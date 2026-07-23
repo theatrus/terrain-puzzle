@@ -22,6 +22,7 @@ type GenerationSpec = {
   relief_mm: number;
   clearance_mm: number;
   samples_per_piece: number;
+  overlay_samples_per_piece: number;
   solid_model: boolean;
   place_name: string;
   buildings: {
@@ -48,6 +49,7 @@ type GenerationSpec = {
     road_color: string;
     roads_enabled: boolean;
     road_width_mm: number;
+    road_height_mm: number;
     minimum_patch_mm: number;
   };
 };
@@ -114,6 +116,7 @@ const initialSpec: GenerationSpec = {
   relief_mm: 14,
   clearance_mm: 0.14,
   samples_per_piece: 64,
+  overlay_samples_per_piece: 112,
   solid_model: false,
   place_name: "Mount Rainier",
   buildings: {
@@ -140,6 +143,7 @@ const initialSpec: GenerationSpec = {
     road_color: "#D8A33C",
     roads_enabled: true,
     road_width_mm: 1,
+    road_height_mm: 0.2,
     minimum_patch_mm: 1.2,
   },
 };
@@ -792,8 +796,24 @@ function ReliefPreview({
         <span>
           {preview ? "Generated terrain" : "Fast shape preview"} ·{" "}
           {spec.solid_model
-            ? `${Math.max(96, Math.min(spec.samples_per_piece * 2, 256))} mesh samples`
-            : `${spec.samples_per_piece} samples/piece`}
+            ? `${Math.max(
+                96,
+                Math.min(
+                  Math.max(
+                    spec.samples_per_piece * 2,
+                    spec.color_output.enabled || spec.buildings.enabled
+                      ? spec.overlay_samples_per_piece
+                      : 0,
+                  ),
+                  256,
+                ),
+              )} mesh samples`
+            : `${Math.max(
+                spec.samples_per_piece,
+                spec.color_output.enabled || spec.buildings.enabled
+                  ? spec.overlay_samples_per_piece
+                  : 0,
+              )} samples/piece`}
         </span>
         <strong>
           {spec.solid_model
@@ -1205,6 +1225,19 @@ export function TerrainStudio() {
             step={8}
             onChange={(value) => update("samples_per_piece", value)}
           />
+          {(spec.color_output.enabled || spec.buildings.enabled) && (
+            <RangeField
+              label="Overlay detail"
+              value={spec.overlay_samples_per_piece}
+              unit=" samples/piece"
+              min={64}
+              max={192}
+              step={8}
+              onChange={(value) =>
+                update("overlay_samples_per_piece", value)
+              }
+            />
+          )}
           {!spec.solid_model && (
             <RangeField
               label="Fit clearance"
@@ -1280,23 +1313,34 @@ export function TerrainStudio() {
                   <small>Falls back to trails when no roads cross the map</small>
                 </div>
                 {spec.color_output.roads_enabled && (
-                  <RangeField
-                    label="Route print width"
-                    value={spec.color_output.road_width_mm}
-                    unit=" mm"
-                    min={0.6}
-                    max={4}
-                    step={0.2}
-                    onChange={(value) => updateColor("road_width_mm", value)}
-                  />
+                  <>
+                    <RangeField
+                      label="Route print width"
+                      value={spec.color_output.road_width_mm}
+                      unit=" mm"
+                      min={0.6}
+                      max={4}
+                      step={0.2}
+                      onChange={(value) => updateColor("road_width_mm", value)}
+                    />
+                    <RangeField
+                      label="Road layer height"
+                      value={spec.color_output.road_height_mm}
+                      unit=" mm"
+                      min={0.08}
+                      max={0.4}
+                      step={0.02}
+                      onChange={(value) => updateColor("road_height_mm", value)}
+                    />
+                  </>
                 )}
                 <p className="color-note">
                   Water shows mapped permanent lakes, reservoirs, and rivers.
                   Narrow streams below 10 m may not appear. Routes come from
                   OpenStreetMap. The generator uses prominent roads first, then
                   trails only when no roads cross the model. Tunnels stay
-                  hidden. Snow is not live. Sides and bottoms use the rock
-                  color.
+                  hidden. Roads rise by the selected single-layer height. Snow
+                  is not live. Sides and bottoms use the rock color.
                 </p>
               </>
             )}

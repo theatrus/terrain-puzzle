@@ -14,7 +14,9 @@ registry and keeps a local tile cache under `data/dem-cache`.
 
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
-forest, rock, snow, and water colors. The 3MF stores standard triangle color
+forest, rock, snow, and water colors. It also reads prominent roads from
+OpenStreetMap through Overpass, then draws motorway, trunk, primary, and
+secondary roads at print-safe widths. The 3MF stores standard triangle color
 properties. STL files stay single-color.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
@@ -71,7 +73,7 @@ npm test
 - `app`: WebGL-free map, color relief preview, print controls, and job downloads
 
 See [the color output plan](docs/color-output-plan.md) for the design and print
-checks behind the rock–forest–snow–water 3MF workflow.
+checks behind the rock–forest–snow–water–road 3MF workflow.
 
 ## Terrain data
 
@@ -84,3 +86,8 @@ attribution notices:
 Color manifests also record the ESA WorldCover tile and attribution:
 
 <https://worldcover2021.esa.int/download>
+
+When road output is on, manifests also record the OpenStreetMap source and
+attribution. Overpass responses are cached under `data/road-cache`:
+
+<https://www.openstreetmap.org/copyright>

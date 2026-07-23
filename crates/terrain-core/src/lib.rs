@@ -91,6 +91,9 @@ pub struct ColorOutputSpec {
     pub rock_color: String,
     pub snow_color: String,
     pub water_color: String,
+    pub road_color: String,
+    pub roads_enabled: bool,
+    pub road_width_mm: f32,
     pub minimum_patch_mm: f32,
 }
 
@@ -102,6 +105,9 @@ impl Default for ColorOutputSpec {
             rock_color: "#7C7468".into(),
             snow_color: "#F4F3EC".into(),
             water_color: "#2F76B5".into(),
+            road_color: "#D8A33C".into(),
+            roads_enabled: true,
+            road_width_mm: 1.0,
             minimum_patch_mm: 1.2,
         }
     }
@@ -114,10 +120,14 @@ impl ColorOutputSpec {
             ("rock", &self.rock_color),
             ("snow", &self.snow_color),
             ("water", &self.water_color),
+            ("road", &self.road_color),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
             }
+        }
+        if !(0.6..=5.0).contains(&self.road_width_mm) {
+            bail!("road line width must be between 0.6 and 5 mm");
         }
         if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
             bail!("minimum color patch must be between 0.4 and 8 mm");
@@ -139,6 +149,7 @@ pub enum SurfaceClass {
     Forest,
     Snow,
     Water,
+    Road,
 }
 
 impl SurfaceClass {
@@ -148,6 +159,7 @@ impl SurfaceClass {
             Self::Forest => 1,
             Self::Snow => 2,
             Self::Water => 3,
+            Self::Road => 4,
         }
     }
 }
@@ -216,6 +228,57 @@ impl SurfaceField {
         }
     }
 
+    pub fn paint_polyline(
+        &mut self,
+        points: &[[f32; 2]],
+        print_width_mm: f32,
+        line_width_mm: f32,
+        class: SurfaceClass,
+    ) {
+        if points.len() < 2 {
+            return;
+        }
+        let cells_per_mm = (self.width - 1) as f32 / print_width_mm.max(f32::EPSILON);
+        let radius = (line_width_mm * 0.5 * cells_per_mm).max(0.75);
+        for segment in points.windows(2) {
+            let start = [
+                segment[0][0] * (self.width - 1) as f32,
+                segment[0][1] * (self.height - 1) as f32,
+            ];
+            let end = [
+                segment[1][0] * (self.width - 1) as f32,
+                segment[1][1] * (self.height - 1) as f32,
+            ];
+            let min_x = (start[0].min(end[0]) - radius).floor().max(0.0) as usize;
+            let max_x = (start[0].max(end[0]) + radius)
+                .ceil()
+                .min((self.width - 1) as f32) as usize;
+            let min_y = (start[1].min(end[1]) - radius).floor().max(0.0) as usize;
+            let max_y = (start[1].max(end[1]) + radius)
+                .ceil()
+                .min((self.height - 1) as f32) as usize;
+            let delta = [end[0] - start[0], end[1] - start[1]];
+            let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+            for y in min_y..=max_y {
+                for x in min_x..=max_x {
+                    let offset = [x as f32 - start[0], y as f32 - start[1]];
+                    let t = if length_squared <= f32::EPSILON {
+                        0.0
+                    } else {
+                        ((offset[0] * delta[0] + offset[1] * delta[1]) / length_squared)
+                            .clamp(0.0, 1.0)
+                    };
+                    let nearest = [start[0] + delta[0] * t, start[1] + delta[1] * t];
+                    let distance_squared =
+                        (x as f32 - nearest[0]).powi(2) + (y as f32 - nearest[1]).powi(2);
+                    if distance_squared <= radius * radius {
+                        self.classes[y * self.width + x] = class;
+                    }
+                }
+            }
+        }
+    }
+
     fn filter_components_smaller_than(&mut self, minimum_cells: usize) {
         let original = self.classes.clone();
         let mut visited = vec![false; original.len()];
@@ -226,7 +289,7 @@ impl SurfaceField {
             let class = original[start];
             let mut queue = VecDeque::from([start]);
             let mut component = Vec::new();
-            let mut neighbours = [0_usize; 4];
+            let mut neighbours = [0_usize; 5];
             visited[start] = true;
             while let Some(index) = queue.pop_front() {
                 component.push(index);
@@ -261,6 +324,7 @@ impl SurfaceField {
                         1 => SurfaceClass::Forest,
                         2 => SurfaceClass::Snow,
                         3 => SurfaceClass::Water,
+                        4 => SurfaceClass::Road,
                         _ => SurfaceClass::Rock,
                     })
                     .unwrap_or(SurfaceClass::Rock);
@@ -277,8 +341,8 @@ impl SurfaceField {
         self.classes[y * self.width + x]
     }
 
-    fn coverage(&self) -> [f32; 4] {
-        let mut counts = [0_usize; 4];
+    fn coverage(&self) -> [f32; 5] {
+        let mut counts = [0_usize; 5];
         for class in &self.classes {
             counts[class.material_index() as usize] += 1;
         }
@@ -966,12 +1030,14 @@ fn build_preview(
             "forest": spec.color_output.forest_color,
             "snow": spec.color_output.snow_color,
             "water": spec.color_output.water_color,
+            "road": spec.color_output.road_color,
         });
         preview["surface_coverage"] = serde_json::json!({
             "rock": coverage[0],
             "forest": coverage[1],
             "snow": coverage[2],
             "water": coverage[3],
+            "road": coverage[4],
         });
         preview["surface_source"] = serde_json::json!(field.source);
     }
@@ -1062,11 +1128,12 @@ fn write_3mf(spec: &GenerationSpec, meshes: &[Mesh], path: &Path) -> Result<()> 
     const COLOR_GROUP_ID: u32 = 1000;
     if spec.color_output.enabled {
         model.push_str(&format!(
-            "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>\n",
+            "    <m:colorgroup id=\"{COLOR_GROUP_ID}\">\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n      <m:color color=\"{}FF\"/>\n    </m:colorgroup>\n",
             spec.color_output.rock_color,
             spec.color_output.forest_color,
             spec.color_output.snow_color,
             spec.color_output.water_color,
+            spec.color_output.road_color,
         ));
     }
 
@@ -1268,10 +1335,11 @@ mod tests {
             5,
             5,
             (0..25)
-                .map(|index| match index % 4 {
+                .map(|index| match index % 5 {
                     1 => SurfaceClass::Forest,
                     2 => SurfaceClass::Snow,
                     3 => SurfaceClass::Water,
+                    4 => SurfaceClass::Road,
                     _ => SurfaceClass::Rock,
                 })
                 .collect(),
@@ -1297,10 +1365,12 @@ mod tests {
         assert!(model.contains("<m:colorgroup id=\"1000\">"));
         assert!(model.contains("color=\"#28543AFF\""));
         assert!(model.contains("color=\"#2F76B5FF\""));
+        assert!(model.contains("color=\"#D8A33CFF\""));
         assert!(model.contains("pid=\"1000\""));
         assert!(model.contains("p1=\"1\""));
         assert!(model.contains("p1=\"2\""));
         assert!(model.contains("p1=\"3\""));
+        assert!(model.contains("p1=\"4\""));
 
         let preview: serde_json::Value =
             serde_json::from_slice(&std::fs::read(output_dir.join("preview.json")).unwrap())
@@ -1308,6 +1378,7 @@ mod tests {
         assert!(preview["surface_classes"].is_array());
         assert_eq!(preview["surface_palette"]["rock"], "#7C7468");
         assert_eq!(preview["surface_palette"]["water"], "#2F76B5");
+        assert_eq!(preview["surface_palette"]["road"], "#D8A33C");
         assert_eq!(preview["surface_source"], "test surface");
 
         std::fs::remove_dir_all(output_dir).unwrap();
@@ -1335,6 +1406,20 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.color_output.water_color, "#2F76B5");
+        assert_eq!(spec.color_output.road_color, "#D8A33C");
+        assert!(spec.color_output.roads_enabled);
+        assert_eq!(spec.color_output.road_width_mm, 1.0);
+    }
+
+    #[test]
+    fn surface_field_paints_print_width_aware_road_lines() {
+        let mut field =
+            SurfaceField::new(21, 21, vec![SurfaceClass::Forest; 21 * 21], "test").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 20.0, 2.0, SurfaceClass::Road);
+
+        assert_eq!(field.classes[10 * 21 + 10], SurfaceClass::Road);
+        assert_eq!(field.classes[9 * 21 + 10], SurfaceClass::Road);
+        assert_eq!(field.classes[7 * 21 + 10], SurfaceClass::Forest);
     }
 
     #[test]

@@ -36,6 +36,7 @@ struct AppState {
     db: Arc<StdMutex<Connection>>,
     jobs_dir: Arc<PathBuf>,
     dem_cache_dir: Arc<PathBuf>,
+    road_cache_dir: Arc<PathBuf>,
     geocoder: Client,
     geocoder_base_url: Arc<String>,
     last_geocode_request: Arc<AsyncMutex<Instant>>,
@@ -112,6 +113,7 @@ async fn main() -> Result<()> {
         db: Arc::new(StdMutex::new(connection)),
         jobs_dir: Arc::new(jobs_dir),
         dem_cache_dir: Arc::new(data_dir.join("dem-cache")),
+        road_cache_dir: Arc::new(data_dir.join("road-cache")),
         geocoder,
         geocoder_base_url: Arc::new(
             env::var("NOMINATIM_BASE_URL")
@@ -397,7 +399,7 @@ fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
     let height_field = elevation::fetch_height_field(spec, &state.dem_cache_dir)?;
     update_job(state, id, "running", 40, &[], None)?;
     let surface_field = if spec.color_output.enabled {
-        let field = surface::fetch_surface_field(spec)?;
+        let field = surface::fetch_surface_field(spec, &state.road_cache_dir)?;
         update_job(state, id, "running", 65, &[], None)?;
         Some(field)
     } else {

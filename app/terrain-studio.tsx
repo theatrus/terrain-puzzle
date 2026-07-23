@@ -28,6 +28,9 @@ type GenerationSpec = {
     rock_color: string;
     snow_color: string;
     water_color: string;
+    road_color: string;
+    roads_enabled: boolean;
+    road_width_mm: number;
     minimum_patch_mm: number;
   };
 };
@@ -58,12 +61,14 @@ type PreviewData = {
     forest: string;
     snow: string;
     water: string;
+    road: string;
   };
   surface_coverage?: {
     rock: number;
     forest: number;
     snow: number;
     water: number;
+    road: number;
   };
   surface_source?: string;
 };
@@ -96,6 +101,9 @@ const initialSpec: GenerationSpec = {
     rock_color: "#7C7468",
     snow_color: "#F4F3EC",
     water_color: "#2F76B5",
+    road_color: "#D8A33C",
+    roads_enabled: true,
+    road_width_mm: 1,
     minimum_patch_mm: 1.2,
   },
 };
@@ -633,7 +641,9 @@ function ReliefPreview({
               ? palette?.snow
               : surfaceClass === 3
                 ? palette?.water
-                : palette?.rock;
+                : surfaceClass === 4
+                  ? palette?.road
+                  : palette?.rock;
         context.beginPath();
         context.moveTo(a.x, a.y);
         context.lineTo(b.x, b.y);
@@ -719,20 +729,25 @@ function ReliefPreview({
               ["Rock", "rock", spec.color_output.rock_color],
               ["Snow", "snow", spec.color_output.snow_color],
               ["Water", "water", spec.color_output.water_color],
+              ["Road", "road", spec.color_output.road_color],
             ] as const
-          ).map(([label, key, color]) => (
-            <span key={key}>
-              <i
-                style={{
-                  background: preview?.surface_palette?.[key] ?? color,
-                }}
-              />
-              {label}
-              {preview?.surface_coverage && (
-                <small>{preview.surface_coverage[key].toFixed(0)}%</small>
-              )}
-            </span>
-          ))}
+          )
+            .filter(
+              ([, key]) => key !== "road" || spec.color_output.roads_enabled,
+            )
+            .map(([label, key, color]) => (
+              <span key={key}>
+                <i
+                  style={{
+                    background: preview?.surface_palette?.[key] ?? color,
+                  }}
+                />
+                {label}
+                {preview?.surface_coverage && (
+                  <small>{preview.surface_coverage[key].toFixed(0)}%</small>
+                )}
+              </span>
+            ))}
         </div>
       )}
       <div className="preview-label">
@@ -922,10 +937,12 @@ export function TerrainStudio() {
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.progress < 40) return "Sampling global elevation…";
     if (job.progress < 65 && spec.color_output.enabled) {
-      return "Mapping forest, rock, snow, and water…";
+      return spec.color_output.roads_enabled
+        ? "Mapping land cover and prominent roads…"
+        : "Mapping forest, rock, snow, and water…";
     }
     return "Building watertight pieces…";
-  }, [job, spec.color_output.enabled]);
+  }, [job, spec.color_output.enabled, spec.color_output.roads_enabled]);
 
   return (
     <main className="studio">
@@ -1104,7 +1121,7 @@ export function TerrainStudio() {
             <div className="color-heading">
               <div>
                 <strong className="color-title">Surface colors</strong>
-                <p>Paint the 3MF from mapped 2021 land cover.</p>
+                <p>Paint the 3MF from mapped land cover and roads.</p>
               </div>
               <label className="color-toggle">
                 <input
@@ -1126,6 +1143,7 @@ export function TerrainStudio() {
                       ["Rock", "rock_color"],
                       ["Snow", "snow_color"],
                       ["Water", "water_color"],
+                      ["Road", "road_color"],
                     ] as const
                   ).map(([label, key]) => (
                     <label key={key}>
@@ -1148,10 +1166,36 @@ export function TerrainStudio() {
                   step={0.2}
                   onChange={(value) => updateColor("minimum_patch_mm", value)}
                 />
+                <div className="road-options">
+                  <label className="color-toggle">
+                    <input
+                      type="checkbox"
+                      checked={spec.color_output.roads_enabled}
+                      onChange={(event) =>
+                        updateColor("roads_enabled", event.target.checked)
+                      }
+                    />
+                    <span>Prominent roads</span>
+                  </label>
+                  <small>Motorway through secondary road</small>
+                </div>
+                {spec.color_output.roads_enabled && (
+                  <RangeField
+                    label="Road print width"
+                    value={spec.color_output.road_width_mm}
+                    unit=" mm"
+                    min={0.6}
+                    max={4}
+                    step={0.2}
+                    onChange={(value) => updateColor("road_width_mm", value)}
+                  />
+                )}
                 <p className="color-note">
                   Water shows mapped permanent lakes, reservoirs, and rivers.
-                  Narrow streams below 10 m may not appear. Snow is not live.
-                  Sides and bottoms use the rock color.
+                  Narrow streams below 10 m may not appear. Roads come from
+                  OpenStreetMap, with wider lines for higher road classes.
+                  Tunnels stay hidden. Snow is not live. Sides and bottoms use
+                  the rock color.
                 </p>
               </>
             )}
@@ -1248,15 +1292,28 @@ export function TerrainStudio() {
               </a>
             </strong>
             {spec.color_output.enabled && (
-              <strong>
-                <a
-                  href="https://worldcover2021.esa.int/download"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  ESA WorldCover 2021 surface classes
-                </a>
-              </strong>
+              <>
+                <strong>
+                  <a
+                    href="https://worldcover2021.esa.int/download"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    ESA WorldCover 2021 surface classes
+                  </a>
+                </strong>
+                {spec.color_output.roads_enabled && (
+                  <strong>
+                    <a
+                      href="https://www.openstreetmap.org/copyright"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      OpenStreetMap road data
+                    </a>
+                  </strong>
+                )}
+              </>
             )}
             <p>
               The job saves source details and required notices in its manifest.

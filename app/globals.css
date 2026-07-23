@@ -653,6 +653,10 @@ a {
   padding: 8px;
 }
 
+.color-swatches label:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .color-swatches input {
   background: transparent;
   border: 0;
@@ -671,6 +675,20 @@ a {
 .color-swatches code {
   color: var(--muted);
   font-size: 8px;
+}
+
+.road-options {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  margin-top: 15px;
+  padding-top: 13px;
+}
+
+.road-options small {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .piece-grid {

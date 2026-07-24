@@ -24,6 +24,13 @@ type GenerationSpec = {
   columns: number;
   base_mm: number;
   relief_mm: number;
+  elevation_datum_m: number | null;
+  elevation_m_per_mm: number | null;
+  adjacent_columns: number;
+  adjacent_rows: number;
+  adjacent_interlocks: boolean;
+  adjacent_tile_column: number;
+  adjacent_tile_row: number;
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;
@@ -45,6 +52,8 @@ type GenerationSpec = {
     floor_mm: number;
     rim_height_mm: number;
     contour_count: number;
+    segment_columns: number;
+    segment_rows: number;
   };
   color_output: {
     enabled: boolean;
@@ -117,6 +126,9 @@ type PreviewData = {
     building: number;
   };
   surface_source?: string;
+  minimum_elevation_m?: number;
+  maximum_elevation_m?: number;
+  height_frame_compatible?: boolean;
 };
 
 type PlaceResult = {
@@ -146,6 +158,13 @@ const initialSpec: GenerationSpec = {
   columns: 10,
   base_mm: 2.4,
   relief_mm: 14,
+  elevation_datum_m: null,
+  elevation_m_per_mm: null,
+  adjacent_columns: 1,
+  adjacent_rows: 1,
+  adjacent_interlocks: false,
+  adjacent_tile_column: 0,
+  adjacent_tile_row: 0,
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
@@ -167,6 +186,8 @@ const initialSpec: GenerationSpec = {
     floor_mm: 1.6,
     rim_height_mm: 3.2,
     contour_count: 18,
+    segment_columns: 1,
+    segment_rows: 1,
   },
   color_output: {
     enabled: true,
@@ -194,6 +215,32 @@ const MIN_MAP_ZOOM = 2;
 const MAX_MAP_ZOOM = 15;
 const MIN_GROUND_SPAN_KM = 1;
 const MAX_GROUND_SPAN_KM = 80;
+
+type AdjacentDirection = "north" | "south" | "east" | "west";
+
+function adjacentCenter(
+  latitude: number,
+  longitude: number,
+  groundSpanKm: number,
+  direction: AdjacentDirection,
+) {
+  const latitudeStep = groundSpanKm / 110.574;
+  const longitudeScale = Math.max(
+    20,
+    111.32 * Math.abs(Math.cos((latitude * Math.PI) / 180)),
+  );
+  const longitudeStep = groundSpanKm / longitudeScale;
+  const nextLatitude =
+    latitude +
+    (direction === "north" ? latitudeStep : direction === "south" ? -latitudeStep : 0);
+  const nextLongitude =
+    longitude +
+    (direction === "east" ? longitudeStep : direction === "west" ? -longitudeStep : 0);
+  return {
+    latitude: Math.max(-85, Math.min(85, nextLatitude)),
+    longitude: ((((nextLongitude + 180) % 360) + 360) % 360) - 180,
+  };
+}
 
 function projectToWorld(longitude: number, latitude: number, zoom: number) {
   const scale = TILE_SIZE * 2 ** zoom;
@@ -1294,6 +1341,7 @@ export function TerrainStudio() {
   const [placeQuery, setPlaceQuery] = useState("");
   const [placeResults, setPlaceResults] = useState<PlaceResult[]>([]);
   const [placeMessage, setPlaceMessage] = useState<string | null>(null);
+  const [adjacentMessage, setAdjacentMessage] = useState<string | null>(null);
   const [searchingPlaces, setSearchingPlaces] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const resizePointerRef = useRef<number | null>(null);
@@ -1417,12 +1465,115 @@ export function TerrainStudio() {
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
     setGeneratedPreview(null);
+    setAdjacentMessage(null);
     setSpec((current) => ({
       ...current,
       center_lat: Number(latitude.toFixed(5)),
       center_lon: Number(longitude.toFixed(5)),
     }));
   }, []);
+
+  const lockHeightFrame = useCallback(() => {
+    const sampled = generatedPreview ?? elevationPreview;
+    if (
+      sampled?.minimum_elevation_m === undefined ||
+      sampled.maximum_elevation_m === undefined
+    ) {
+      setAdjacentMessage("Wait for the elevation sample, then lock the height frame.");
+      return false;
+    }
+    const sampledRange = Math.max(
+      1,
+      sampled.maximum_elevation_m - sampled.minimum_elevation_m,
+    );
+    const margin = Math.max(2, sampledRange * 0.02);
+    const datum = Math.floor((sampled.minimum_elevation_m - margin) * 10) / 10;
+    const metresPerMm = Math.max(
+      0.1,
+      (sampled.maximum_elevation_m - datum) / spec.relief_mm,
+    );
+    setSpec((current) => ({
+      ...current,
+      elevation_datum_m: datum,
+      elevation_m_per_mm: Number(metresPerMm.toFixed(4)),
+    }));
+    setAdjacentMessage(
+      `Height frame locked at ${datum.toFixed(1)} m with ${metresPerMm.toFixed(1)} m/mm.`,
+    );
+    return true;
+  }, [elevationPreview, generatedPreview, spec.relief_mm]);
+
+  const unlockHeightFrame = useCallback(() => {
+    setGeneratedPreview(null);
+    setSpec((current) => ({
+      ...current,
+      elevation_datum_m: null,
+      elevation_m_per_mm: null,
+    }));
+    setAdjacentMessage(
+      "Each tile will now use its own height range and may not meet its neighbors.",
+    );
+  }, []);
+
+  const moveToAdjacentTile = useCallback(
+    (direction: AdjacentDirection) => {
+      const sampled = generatedPreview ?? elevationPreview;
+      let datum = spec.elevation_datum_m;
+      let metresPerMm = spec.elevation_m_per_mm;
+      if (datum === null || metresPerMm === null) {
+        if (
+          sampled?.minimum_elevation_m === undefined ||
+          sampled.maximum_elevation_m === undefined
+        ) {
+          setAdjacentMessage(
+            "Wait for the elevation sample before moving so the two tiles can share a height frame.",
+          );
+          return;
+        }
+        const sampledRange = Math.max(
+          1,
+          sampled.maximum_elevation_m - sampled.minimum_elevation_m,
+        );
+        const margin = Math.max(2, sampledRange * 0.02);
+        datum =
+          Math.floor((sampled.minimum_elevation_m - margin) * 10) / 10;
+        metresPerMm = Number(
+          (
+            (sampled.maximum_elevation_m - datum) /
+            spec.relief_mm
+          ).toFixed(4),
+        );
+      }
+      const next = adjacentCenter(
+        spec.center_lat,
+        spec.center_lon,
+        spec.ground_span_km,
+        direction,
+      );
+      setGeneratedPreview(null);
+      setElevationPreview(null);
+      setSpec((current) => ({
+        ...current,
+        center_lat: Number(next.latitude.toFixed(5)),
+        center_lon: Number(next.longitude.toFixed(5)),
+        elevation_datum_m: datum,
+        elevation_m_per_mm: metresPerMm,
+      }));
+      setAdjacentMessage(
+        `Moved ${direction} by one tile. The shared height frame stays locked.`,
+      );
+    },
+    [
+      elevationPreview,
+      generatedPreview,
+      spec.center_lat,
+      spec.center_lon,
+      spec.elevation_datum_m,
+      spec.elevation_m_per_mm,
+      spec.ground_span_km,
+      spec.relief_mm,
+    ],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1434,6 +1585,11 @@ export function TerrainStudio() {
         center_lat: spec.center_lat,
         center_lon: spec.center_lon,
         ground_span_km: spec.ground_span_km,
+        width_mm: spec.width_mm,
+        base_mm: spec.base_mm,
+        relief_mm: spec.relief_mm,
+        elevation_datum_m: spec.elevation_datum_m,
+        elevation_m_per_mm: spec.elevation_m_per_mm,
         color_output: {
           ...initialSpec.color_output,
           enabled: false,
@@ -1464,7 +1620,16 @@ export function TerrainStudio() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [spec.center_lat, spec.center_lon, spec.ground_span_km]);
+  }, [
+    spec.base_mm,
+    spec.center_lat,
+    spec.center_lon,
+    spec.elevation_datum_m,
+    spec.elevation_m_per_mm,
+    spec.ground_span_km,
+    spec.relief_mm,
+    spec.width_mm,
+  ]);
 
   const searchPlaces = async () => {
     const query = placeQuery.trim();
@@ -1709,6 +1874,10 @@ export function TerrainStudio() {
   }, [job]);
 
   const preview = generatedPreview ?? elevationPreview;
+  const heightFrameLocked =
+    spec.elevation_datum_m !== null && spec.elevation_m_per_mm !== null;
+  const heightFrameCompatible =
+    preview?.height_frame_compatible !== false;
   const generationActive =
     job !== null && ["queued", "running"].includes(job.status);
   const cancellationActive = generationActive || canceling;
@@ -1931,6 +2100,107 @@ export function TerrainStudio() {
                 />
               </label>
             </div>
+            <div
+              className="adjacent-tiles"
+              role="group"
+              aria-label="Adjacent tiles"
+            >
+              <div className="adjacent-heading">
+                <strong>Adjacent tiles</strong>
+                <button
+                  type="button"
+                  onClick={heightFrameLocked ? unlockHeightFrame : lockHeightFrame}
+                >
+                  {heightFrameLocked ? "Unlock height" : "Lock height"}
+                </button>
+              </div>
+              <div className="adjacent-compact-row">
+                <div className="adjacent-actions" aria-label="Move one tile">
+                  {(["north", "west", "east", "south"] as const).map(
+                    (direction) => (
+                      <button
+                        type="button"
+                        key={direction}
+                        aria-label={`Move ${direction} one tile`}
+                        title={`Move ${direction} one tile`}
+                        onClick={() => moveToAdjacentTile(direction)}
+                      >
+                        <span aria-hidden="true">
+                          {direction === "north"
+                            ? "↑"
+                            : direction === "south"
+                              ? "↓"
+                              : direction === "east"
+                                ? "→"
+                                : "←"}
+                        </span>
+                      </button>
+                    ),
+                  )}
+                </div>
+                <div className="adjacent-grid" aria-label="Auto-adjacent grid">
+                  <span>Auto grid</span>
+                  <label>
+                    Across
+                    <select
+                      value={spec.adjacent_columns}
+                      onChange={(event) =>
+                        update("adjacent_columns", Number(event.target.value))
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span aria-hidden="true">×</span>
+                  <label>
+                    Down
+                    <select
+                      value={spec.adjacent_rows}
+                      onChange={(event) =>
+                        update("adjacent_rows", Number(event.target.value))
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+              {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
+                <label className="adjacent-interlock-toggle">
+                  <input
+                    type="checkbox"
+                    checked={spec.adjacent_interlocks}
+                    onChange={(event) =>
+                      update("adjacent_interlocks", event.target.checked)
+                    }
+                  />
+                  Add matching tabs and sockets only on shared tile edges
+                </label>
+              )}
+              <p
+                className={`height-frame-status${
+                  heightFrameLocked && !heightFrameCompatible ? " warning" : ""
+                }`}
+                role={heightFrameLocked && !heightFrameCompatible ? "alert" : "status"}
+              >
+                {heightFrameLocked && !heightFrameCompatible
+                  ? `This tile drops below the shared ${spec.elevation_datum_m?.toFixed(
+                      1,
+                    )} m datum. Lower the datum and regenerate earlier tiles.`
+                  : heightFrameLocked
+                    ? `Shared datum ${spec.elevation_datum_m?.toFixed(
+                        1,
+                      )} m · ${spec.elevation_m_per_mm?.toFixed(1)} m/mm`
+                    : spec.adjacent_columns > 1 || spec.adjacent_rows > 1
+                      ? `${spec.adjacent_columns * spec.adjacent_rows} terrain 3MF files; current tile is the north-west corner. The grid shares one height frame.`
+                      : "Auto height fits one tile; manual neighbors may form a step."}
+              </p>
+              {adjacentMessage && <p className="adjacent-message">{adjacentMessage}</p>}
+            </div>
             <label className="place-label-field">
               Tray place label
               <input
@@ -2008,6 +2278,15 @@ export function TerrainStudio() {
               max={80}
               step={1}
               onChange={(value) => update("relief_mm", value)}
+            />
+            <RangeField
+              label="Minimum piece height"
+              value={spec.base_mm}
+              unit=" mm"
+              min={1}
+              max={12}
+              step={0.2}
+              onChange={(value) => update("base_mm", value)}
             />
             <RangeField
               label="Mesh detail"
@@ -2517,10 +2796,51 @@ export function TerrainStudio() {
                   step={1}
                   onChange={(value) => updateTray("contour_count", value)}
                 />
+                <div
+                  className="tray-segments"
+                  role="group"
+                  aria-label="Interlocking tray segments"
+                >
+                  <div>
+                    <strong>Interlocking tray segments</strong>
+                    <small>Split a large tray into print-bed-sized parts.</small>
+                  </div>
+                  <label>
+                    Across
+                    <select
+                      value={spec.tray.segment_columns}
+                      onChange={(event) =>
+                        updateTray(
+                          "segment_columns",
+                          Number(event.target.value),
+                        )
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span aria-hidden="true">×</span>
+                  <label>
+                    Down
+                    <select
+                      value={spec.tray.segment_rows}
+                      onChange={(event) =>
+                        updateTray("segment_rows", Number(event.target.value))
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <p className="color-note">
                   The color 3MF prints contour lines on the flat tray floor and
                   the place name, latitude, and longitude as raised shapes on
-                  the top front lip. The job also includes a plain STL.
+                  the top front lip. Split trays use matching jigsaw seams. The
+                  job also includes a plain STL.
                 </p>
               </>
             )}

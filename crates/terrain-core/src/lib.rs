@@ -38,6 +38,13 @@ pub struct GenerationSpec {
     pub columns: u32,
     pub base_mm: f32,
     pub relief_mm: f32,
+    pub elevation_datum_m: Option<f32>,
+    pub elevation_m_per_mm: Option<f32>,
+    pub adjacent_columns: u32,
+    pub adjacent_rows: u32,
+    pub adjacent_interlocks: bool,
+    pub adjacent_tile_column: u32,
+    pub adjacent_tile_row: u32,
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
     pub overlay_samples_per_piece: u32,
@@ -61,6 +68,13 @@ impl Default for GenerationSpec {
             columns: 3,
             base_mm: 2.4,
             relief_mm: 14.0,
+            elevation_datum_m: None,
+            elevation_m_per_mm: None,
+            adjacent_columns: 1,
+            adjacent_rows: 1,
+            adjacent_interlocks: false,
+            adjacent_tile_column: 0,
+            adjacent_tile_row: 0,
             clearance_mm: 0.14,
             samples_per_piece: 64,
             overlay_samples_per_piece: 112,
@@ -97,6 +111,26 @@ impl GenerationSpec {
         }
         if !(1.0..=80.0).contains(&self.relief_mm) {
             bail!("relief must be between 1 and 80 mm");
+        }
+        match (self.elevation_datum_m, self.elevation_m_per_mm) {
+            (Some(datum), Some(metres_per_mm)) => {
+                if !(-12_000.0..=12_000.0).contains(&datum) {
+                    bail!("elevation datum must be between -12000 and 12000 m");
+                }
+                if !(0.1..=2_000.0).contains(&metres_per_mm) {
+                    bail!("elevation scale must be between 0.1 and 2000 m/mm");
+                }
+            }
+            (None, None) => {}
+            _ => bail!("elevation datum and scale must be set together"),
+        }
+        if !(1..=4).contains(&self.adjacent_columns) || !(1..=4).contains(&self.adjacent_rows) {
+            bail!("adjacent grid columns and rows must each be between 1 and 4");
+        }
+        if self.adjacent_tile_column >= self.adjacent_columns
+            || self.adjacent_tile_row >= self.adjacent_rows
+        {
+            bail!("adjacent tile position must be inside its grid");
         }
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
@@ -173,6 +207,8 @@ pub struct TraySpec {
     pub floor_mm: f32,
     pub rim_height_mm: f32,
     pub contour_count: u32,
+    pub segment_columns: u32,
+    pub segment_rows: u32,
 }
 
 impl Default for TraySpec {
@@ -187,6 +223,8 @@ impl Default for TraySpec {
             floor_mm: 1.6,
             rim_height_mm: 3.2,
             contour_count: 18,
+            segment_columns: 1,
+            segment_rows: 1,
         }
     }
 }
@@ -216,6 +254,9 @@ impl TraySpec {
         }
         if !(5..=60).contains(&self.contour_count) {
             bail!("tray contour count must be between 5 and 60");
+        }
+        if !(1..=4).contains(&self.segment_columns) || !(1..=4).contains(&self.segment_rows) {
+            bail!("tray segment columns and rows must each be between 1 and 4");
         }
         Ok(())
     }
@@ -1084,7 +1125,7 @@ impl HeightField {
     }
 
     fn normalized_at(&self, u: f32, v: f32, minimum: f32, range: f32) -> f32 {
-        ((self.elevation_m_at(u, v) - minimum) / range).clamp(0.0, 1.0)
+        ((self.elevation_m_at(u, v) - minimum) / range).max(0.0)
     }
 
     pub fn elevation_m_at(&self, u: f32, v: f32) -> f32 {
@@ -1104,6 +1145,11 @@ impl HeightField {
     }
 
     fn range(&self) -> (f32, f32) {
+        let (minimum, maximum) = self.elevation_bounds();
+        (minimum, (maximum - minimum).max(1.0))
+    }
+
+    pub fn elevation_bounds(&self) -> (f32, f32) {
         let (minimum, maximum) = self
             .values_m
             .par_iter()
@@ -1121,8 +1167,33 @@ impl HeightField {
                     )
                 },
             );
-        (minimum, (maximum - minimum).max(1.0))
+        (minimum, maximum)
     }
+}
+
+fn height_range_for_spec(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+) -> Option<(f32, f32)> {
+    height_field.map(|field| {
+        spec.elevation_datum_m
+            .zip(spec.elevation_m_per_mm)
+            .map(|(datum, metres_per_mm)| (datum, metres_per_mm * spec.relief_mm))
+            .unwrap_or_else(|| field.range())
+    })
+}
+
+fn validate_height_frame(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<()> {
+    if let (Some(field), Some(datum)) = (height_field, spec.elevation_datum_m) {
+        let (minimum, _) = field.elevation_bounds();
+        if minimum + 0.01 < datum {
+            bail!(
+                "shared elevation datum {datum:.1} m is above this tile's minimum elevation \
+                 {minimum:.1} m; lower the datum and regenerate adjacent tiles"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1253,7 +1324,7 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     let label = tray_label(spec, outer_width, tray.rim_width_mm)?;
     let z_coordinates = [0.0, rim_z];
 
-    let height_range = height_field.map(HeightField::range);
+    let height_range = height_range_for_spec(spec, height_field);
     let contour_paths = trace_tray_contours(
         spec,
         height_field,
@@ -1423,6 +1494,352 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     label.add_embossed_shapes(&mut mesh, rim_z)?;
 
     Ok(mesh.finish("terrain-tray"))
+}
+
+fn build_tray_segments(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+) -> Result<Vec<Mesh>> {
+    if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
+        return Ok(vec![build_tray(spec, height_field)?]);
+    }
+    let mut segments =
+        Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
+    for row in 0..spec.tray.segment_rows {
+        for column in 0..spec.tray.segment_columns {
+            segments.push(build_tray_segment(spec, height_field, row, column)?);
+        }
+    }
+    Ok(segments)
+}
+
+fn build_tray_segment(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    row: u32,
+    column: u32,
+) -> Result<Mesh> {
+    let tray = &spec.tray;
+    let inner_width = spec.width_mm + tray.clearance_mm * 2.0;
+    let inner_height = spec.height_mm() + tray.clearance_mm * 2.0;
+    let outer_width = inner_width + tray.rim_width_mm * 2.0;
+    let outer_height = inner_height + tray.rim_width_mm * 2.0;
+    let inner_x0 = tray.rim_width_mm;
+    let inner_y0 = tray.rim_width_mm;
+    let inner_x1 = inner_x0 + inner_width;
+    let inner_y1 = inner_y0 + inner_height;
+    let floor_z = tray.floor_mm;
+    let rim_z = tray.floor_mm + tray.rim_height_mm;
+    let outline = tray_segment_outline(
+        outer_width,
+        outer_height,
+        tray.segment_rows,
+        tray.segment_columns,
+        row,
+        column,
+    );
+    let segment_polygon = geo_polygon(&outline);
+    let inner_polygon = rectangle_polygon(inner_x0, inner_y0, inner_x1, inner_y1);
+    let floor_polygons = segment_polygon.intersection(&inner_polygon).0;
+    let rim_polygons = segment_polygon.difference(&inner_polygon).0;
+    let mut mesh = MeshBuilder::default();
+
+    add_horizontal_polygons(
+        &mut mesh,
+        &floor_polygons,
+        floor_z,
+        SurfaceClass::Rock,
+        false,
+    )?;
+    add_horizontal_polygons(&mut mesh, &rim_polygons, rim_z, SurfaceClass::Rock, false)?;
+    add_horizontal_polygons(&mut mesh, &floor_polygons, 0.0, SurfaceClass::Rock, true)?;
+    add_horizontal_polygons(&mut mesh, &rim_polygons, 0.0, SurfaceClass::Rock, true)?;
+
+    add_segment_outer_walls(
+        &mut mesh,
+        &floor_polygons,
+        [inner_x0, inner_y0, inner_x1, inner_y1],
+        floor_z,
+        None,
+    );
+    add_segment_outer_walls(
+        &mut mesh,
+        &rim_polygons,
+        [inner_x0, inner_y0, inner_x1, inner_y1],
+        rim_z,
+        Some(floor_z),
+    );
+    add_segment_inner_walls(
+        &mut mesh,
+        &floor_polygons,
+        [inner_x0, inner_y0, inner_x1, inner_y1],
+        floor_z,
+        rim_z,
+    );
+
+    let x_coordinates = regular_coordinates(inner_x0, inner_x1, 0.35);
+    let y_coordinates = regular_coordinates(inner_y0, inner_y1, 0.35);
+    let height_range = height_range_for_spec(spec, height_field);
+    let contour_paths = trace_tray_contours(
+        spec,
+        height_field,
+        height_range,
+        &x_coordinates,
+        &y_coordinates,
+        inner_x0,
+        inner_y0,
+        inner_width,
+        inner_height,
+    );
+    for path in contour_paths {
+        for clipped in clip_contour_path(&path, &segment_polygon) {
+            add_contour_ribbon(
+                &mut mesh,
+                &clipped,
+                floor_z - TRAY_CONTOUR_INLAY_MM,
+                floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
+            );
+        }
+    }
+
+    if row == 0 {
+        let segment_width = outer_width / tray.segment_columns as f32;
+        let label_margin = 8.0_f32.min(segment_width * 0.2);
+        let mut label = tray_label(
+            spec,
+            (segment_width - label_margin * 2.0).max(12.0),
+            tray.rim_width_mm,
+        )?;
+        label.origin_x += column as f32 * segment_width + label_margin;
+        label.add_embossed_shapes(&mut mesh, rim_z)?;
+    }
+
+    let minimum_x = outline
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let minimum_y = outline
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let mut result = mesh.finish(format!("terrain-tray-r{}-c{}", row + 1, column + 1));
+    for vertex in &mut result.vertices {
+        vertex[0] -= minimum_x;
+        vertex[1] -= minimum_y;
+    }
+    Ok(result)
+}
+
+fn tray_segment_outline(
+    width: f32,
+    height: f32,
+    rows: u32,
+    columns: u32,
+    row: u32,
+    column: u32,
+) -> Vec<[f32; 2]> {
+    let x0 = column as f32 * width / columns as f32;
+    let x1 = (column + 1) as f32 * width / columns as f32;
+    let y0 = row as f32 * height / rows as f32;
+    let y1 = (row + 1) as f32 * height / rows as f32;
+    let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let nominal_size = ((x1 - x0).min(y1 - y0)).max(1.0);
+    let base_depth = nominal_size * 0.12;
+    let samples = 96;
+    let edges = [
+        (
+            corners[0],
+            corners[1],
+            shared_edge_pattern(0, row, column),
+            edge_sign(0, column, row, rows),
+            false,
+        ),
+        (
+            corners[1],
+            corners[2],
+            shared_edge_pattern(1, column + 1, row),
+            edge_sign(1, row, column + 1, columns),
+            false,
+        ),
+        (
+            corners[3],
+            corners[2],
+            shared_edge_pattern(0, row + 1, column),
+            edge_sign(0, column, row + 1, rows),
+            true,
+        ),
+        (
+            corners[0],
+            corners[3],
+            shared_edge_pattern(1, column, row),
+            edge_sign(1, row, column, columns),
+            true,
+        ),
+    ];
+    let mut outline = Vec::with_capacity(samples * 4);
+    for (start, end, pattern, sign, reverse) in edges {
+        for index in 0..samples {
+            let t = index as f32 / samples as f32;
+            outline.push(puzzle_edge_point(
+                start,
+                end,
+                pattern,
+                sign,
+                if reverse { 1.0 - t } else { t },
+                base_depth,
+            ));
+        }
+    }
+    outline
+}
+
+fn rectangle_polygon(x0: f32, y0: f32, x1: f32, y1: f32) -> Polygon<f64> {
+    geo_polygon(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+}
+
+fn add_horizontal_polygons(
+    mesh: &mut MeshBuilder,
+    polygons: &[Polygon<f64>],
+    z: f32,
+    material: SurfaceClass,
+    reverse: bool,
+) -> Result<()> {
+    for polygon in polygons {
+        let mut points = Vec::new();
+        let mut constraints = Vec::new();
+        for ring in std::iter::once(polygon.exterior()).chain(polygon.interiors()) {
+            let start = points.len();
+            for coordinate in ring.0.iter().take(ring.0.len().saturating_sub(1)) {
+                points.push(Point2::new(coordinate.x, coordinate.y));
+            }
+            let count = points.len() - start;
+            for index in 0..count {
+                constraints.push([start + index, start + (index + 1) % count]);
+            }
+        }
+        if points.len() < 3 {
+            continue;
+        }
+        let triangulation =
+            ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
+                .context("triangulate tray segment")?;
+        for face in triangulation.inner_faces() {
+            let vertices = face.vertices();
+            let center = vertices.iter().fold([0.0, 0.0], |sum, vertex| {
+                let point = vertex.position();
+                [sum[0] + point.x / 3.0, sum[1] + point.y / 3.0]
+            });
+            if !polygon.contains(&Point::new(center[0], center[1])) {
+                continue;
+            }
+            let points = vertices.map(|vertex| {
+                let point = vertex.position();
+                [point.x as f32, point.y as f32, z]
+            });
+            if reverse {
+                mesh.triangle(points[0], points[2], points[1], material);
+            } else {
+                mesh.triangle(points[0], points[1], points[2], material);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_segment_inner_walls(
+    mesh: &mut MeshBuilder,
+    floor_polygons: &[Polygon<f64>],
+    inner: [f32; 4],
+    floor_z: f32,
+    rim_z: f32,
+) {
+    let [x0, y0, x1, y1] = inner;
+    let on_inner_boundary = |a: [f32; 2], b: [f32; 2]| {
+        ((a[0] - x0).abs() < 0.0001 && (b[0] - x0).abs() < 0.0001)
+            || ((a[0] - x1).abs() < 0.0001 && (b[0] - x1).abs() < 0.0001)
+            || ((a[1] - y0).abs() < 0.0001 && (b[1] - y0).abs() < 0.0001)
+            || ((a[1] - y1).abs() < 0.0001 && (b[1] - y1).abs() < 0.0001)
+    };
+    for polygon in floor_polygons {
+        for ring in std::iter::once(polygon.exterior()).chain(polygon.interiors()) {
+            for edge in ring.0.windows(2) {
+                let a = [edge[0].x as f32, edge[0].y as f32];
+                let b = [edge[1].x as f32, edge[1].y as f32];
+                if on_inner_boundary(a, b) {
+                    mesh.quad(
+                        [a[0], a[1], floor_z],
+                        [b[0], b[1], floor_z],
+                        [b[0], b[1], rim_z],
+                        [a[0], a[1], rim_z],
+                        SurfaceClass::Rock,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn add_segment_outer_walls(
+    mesh: &mut MeshBuilder,
+    polygons: &[Polygon<f64>],
+    inner: [f32; 4],
+    top_z: f32,
+    split_z: Option<f32>,
+) {
+    let [x0, y0, x1, y1] = inner;
+    let on_inner_boundary = |a: [f32; 2], b: [f32; 2]| {
+        ((a[0] - x0).abs() < 0.0001 && (b[0] - x0).abs() < 0.0001)
+            || ((a[0] - x1).abs() < 0.0001 && (b[0] - x1).abs() < 0.0001)
+            || ((a[1] - y0).abs() < 0.0001 && (b[1] - y0).abs() < 0.0001)
+            || ((a[1] - y1).abs() < 0.0001 && (b[1] - y1).abs() < 0.0001)
+    };
+    for polygon in polygons {
+        for ring in std::iter::once(polygon.exterior()).chain(polygon.interiors()) {
+            for edge in ring.0.windows(2) {
+                let a = [edge[0].x as f32, edge[0].y as f32];
+                let b = [edge[1].x as f32, edge[1].y as f32];
+                if !on_inner_boundary(a, b) {
+                    let levels = split_z
+                        .filter(|split| *split > 0.0 && *split < top_z)
+                        .map(|split| vec![0.0, split, top_z])
+                        .unwrap_or_else(|| vec![0.0, top_z]);
+                    for levels in levels.windows(2) {
+                        mesh.quad(
+                            [a[0], a[1], levels[0]],
+                            [b[0], b[1], levels[0]],
+                            [b[0], b[1], levels[1]],
+                            [a[0], a[1], levels[1]],
+                            SurfaceClass::Rock,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn clip_contour_path(path: &ContourPath, segment: &Polygon<f64>) -> Vec<ContourPath> {
+    let mut paths = Vec::new();
+    let mut current = Vec::new();
+    for point in &path.points {
+        if segment.contains(&Point::new(f64::from(point[0]), f64::from(point[1]))) {
+            current.push(*point);
+        } else if current.len() >= 2 {
+            paths.push(ContourPath {
+                points: std::mem::take(&mut current),
+                closed: false,
+            });
+        } else {
+            current.clear();
+        }
+    }
+    if current.len() >= 2 {
+        paths.push(ContourPath {
+            points: current,
+            closed: path.closed && paths.is_empty(),
+        });
+    }
+    paths
 }
 
 #[derive(Debug, Clone)]
@@ -2418,7 +2835,8 @@ fn generate_project_inner(
     };
 
     let mut artifacts = Vec::new();
-    let height_range = height_field.map(HeightField::range);
+    validate_height_frame(spec, height_field)?;
+    let height_range = height_range_for_spec(spec, height_field);
     let project_path = output_dir.join(if spec.solid_model {
         "terrain-solid.3mf"
     } else {
@@ -2480,11 +2898,6 @@ fn generate_project_inner(
 
     if spec.tray.enabled {
         ensure_generation_active(is_cancelled)?;
-        let tray_mesh = build_tray(spec, height_field)?;
-        let tray_stl_path = output_dir.join("terrain-tray.stl");
-        write_binary_stl(&tray_mesh, &tray_stl_path)?;
-        artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
-
         let mut tray_spec = spec.clone();
         tray_spec.solid_model = true;
         tray_spec.color_output.enabled = true;
@@ -2494,11 +2907,25 @@ fn generate_project_inner(
         tray_spec.color_output.water_color = spec.tray.tray_color.clone();
         tray_spec.color_output.road_color = spec.tray.tray_color.clone();
         tray_spec.color_output.building_color = spec.tray.tray_color.clone();
-        let tray_3mf_path = output_dir.join("terrain-tray.3mf");
-        let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
-        tray_writer.write_mesh(&tray_mesh)?;
-        tray_writer.finish()?;
-        artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
+        let tray_meshes = build_tray_segments(spec, height_field)?;
+        for (index, tray_mesh) in tray_meshes.iter().enumerate() {
+            let row = index as u32 / spec.tray.segment_columns;
+            let column = index as u32 % spec.tray.segment_columns;
+            let suffix = if tray_meshes.len() == 1 {
+                String::new()
+            } else {
+                format!("-r{:02}-c{:02}", row + 1, column + 1)
+            };
+            let tray_stl_path = output_dir.join(format!("terrain-tray{suffix}.stl"));
+            write_binary_stl(tray_mesh, &tray_stl_path)?;
+            artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
+
+            let tray_3mf_path = output_dir.join(format!("terrain-tray{suffix}.3mf"));
+            let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
+            tray_writer.write_mesh(tray_mesh)?;
+            tray_writer.finish()?;
+            artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
+        }
     }
     on_progress(0.95)?;
 
@@ -2552,7 +2979,7 @@ fn build_piece(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
-    let height_range = height_field.map(HeightField::range);
+    let height_range = height_range_for_spec(spec, height_field);
     build_piece_with_height_range(spec, height_field, height_range, surface_field, row, column)
 }
 
@@ -2593,7 +3020,7 @@ fn build_piece_with_height_range(
     let assembled_width = spec.width_mm;
     let assembled_height = spec.height_mm();
     let outline = if spec.solid_model {
-        solid_outline(spec, samples)
+        solid_outline(spec, samples)?
     } else {
         piece_outline(spec, row, column, false)?
     }
@@ -3123,7 +3550,7 @@ fn build_road_polygon_shell(
         {
             let progress = surface_line_progress(line, u, v);
             let elevation = start + (end - start) * progress;
-            spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).clamp(0.0, 1.0)
+            spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).max(0.0)
         } else {
             spec.base_mm
                 + spec.relief_mm
@@ -3392,7 +3819,14 @@ fn densify_outline_for_triangulation(outline: &[[f32; 2]], maximum_step: f32) ->
     dense
 }
 
-fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Vec<[f32; 2]> {
+fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Result<Vec<[f32; 2]>> {
+    if spec.adjacent_interlocks && (spec.adjacent_columns > 1 || spec.adjacent_rows > 1) {
+        let mut tile = spec.clone();
+        tile.rows = 1;
+        tile.columns = 1;
+        tile.clearance_mm = 0.0;
+        return piece_outline(&tile, 0, 0, true);
+    }
     let corners = [
         [0.0, 0.0],
         [spec.width_mm, 0.0],
@@ -3411,7 +3845,7 @@ fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Vec<[f32; 2]> {
             ]);
         }
     }
-    outline
+    Ok(outline)
 }
 
 fn piece_outline(
@@ -3435,7 +3869,7 @@ fn piece_outline(
         outline.push(puzzle_edge_point(
             bottom_left,
             bottom_right,
-            shared_edge_pattern(0, row, column),
+            piece_edge_pattern(spec, 0, column, row),
             puzzle_edge_sign(spec, 0, column, row, spec.rows),
             t,
             base_depth,
@@ -3446,7 +3880,7 @@ fn piece_outline(
         outline.push(puzzle_edge_point(
             bottom_right,
             top_right,
-            shared_edge_pattern(1, column + 1, row),
+            piece_edge_pattern(spec, 1, row, column + 1),
             puzzle_edge_sign(spec, 1, row, column + 1, spec.columns),
             t,
             base_depth,
@@ -3457,7 +3891,7 @@ fn piece_outline(
         outline.push(puzzle_edge_point(
             top_left,
             top_right,
-            shared_edge_pattern(0, row + 1, column),
+            piece_edge_pattern(spec, 0, column, row + 1),
             puzzle_edge_sign(spec, 0, column, row + 1, spec.rows),
             t,
             base_depth,
@@ -3468,7 +3902,7 @@ fn piece_outline(
         outline.push(puzzle_edge_point(
             bottom_left,
             top_left,
-            shared_edge_pattern(1, column, row),
+            piece_edge_pattern(spec, 1, row, column),
             puzzle_edge_sign(spec, 1, row, column, spec.columns),
             t,
             base_depth,
@@ -3530,10 +3964,72 @@ fn puzzle_edge_sign(
     line: u32,
     line_count: u32,
 ) -> f32 {
-    if spec.puzzle_tabs {
+    if let Some((global_segment, global_line, global_line_count)) =
+        adjacent_edge_key(spec, orientation, segment, line, line_count)
+    {
+        edge_sign(orientation, global_segment, global_line, global_line_count)
+    } else if spec.puzzle_tabs {
         edge_sign(orientation, segment, line, line_count)
     } else {
         0.0
+    }
+}
+
+fn piece_edge_pattern(
+    spec: &GenerationSpec,
+    orientation: u64,
+    segment: u32,
+    line: u32,
+) -> EdgePattern {
+    adjacent_edge_key(
+        spec,
+        orientation,
+        segment,
+        line,
+        if orientation == 0 {
+            spec.rows
+        } else {
+            spec.columns
+        },
+    )
+    .map(|(global_segment, global_line, _)| {
+        shared_edge_pattern(orientation, global_line, global_segment)
+    })
+    .unwrap_or_else(|| shared_edge_pattern(orientation, line, segment))
+}
+
+fn adjacent_edge_key(
+    spec: &GenerationSpec,
+    orientation: u64,
+    segment: u32,
+    line: u32,
+    line_count: u32,
+) -> Option<(u32, u32, u32)> {
+    if !spec.adjacent_interlocks || (line != 0 && line != line_count) {
+        return None;
+    }
+    if orientation == 0 {
+        let global_line = if line == 0 {
+            spec.adjacent_tile_row + 1
+        } else {
+            spec.adjacent_tile_row
+        };
+        Some((
+            spec.adjacent_tile_column * spec.columns + segment,
+            global_line,
+            spec.adjacent_rows,
+        ))
+    } else {
+        let global_line = if line == 0 {
+            spec.adjacent_tile_column
+        } else {
+            spec.adjacent_tile_column + 1
+        };
+        Some((
+            spec.adjacent_tile_row * spec.rows + segment,
+            global_line,
+            spec.adjacent_columns,
+        ))
     }
 }
 
@@ -3791,7 +4287,7 @@ fn build_preview(
     surface_field: Option<&SurfaceField>,
     size: usize,
 ) -> serde_json::Value {
-    let range = height_field.map(HeightField::range);
+    let range = height_range_for_spec(spec, height_field);
     let samples = (0..size * size)
         .into_par_iter()
         .map(|index| {
@@ -3839,6 +4335,16 @@ fn build_preview(
         "columns": spec.columns,
         "solid_model": spec.solid_model,
     });
+    if let Some(field) = height_field {
+        let (minimum, maximum) = field.elevation_bounds();
+        preview["minimum_elevation_m"] = serde_json::json!(minimum);
+        preview["maximum_elevation_m"] = serde_json::json!(maximum);
+        preview["height_frame_compatible"] = serde_json::json!(
+            spec.elevation_datum_m
+                .map(|datum| minimum + 0.01 >= datum)
+                .unwrap_or(true)
+        );
+    }
     if let (Some(field), Some(classes)) = (surface_field, surface_classes) {
         let coverage = field.coverage();
         preview["surface_classes"] = serde_json::json!(classes);
@@ -4091,6 +4597,78 @@ mod tests {
     }
 
     #[test]
+    fn shared_height_frame_requires_a_datum_and_scale() {
+        let mut spec = GenerationSpec {
+            elevation_datum_m: Some(100.0),
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_err());
+
+        spec.elevation_m_per_mm = Some(25.0);
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
+        let spec = GenerationSpec {
+            elevation_datum_m: Some(50.0),
+            elevation_m_per_mm: Some(10.0),
+            ..GenerationSpec::default()
+        };
+        let first = HeightField::new(2, 2, vec![100.0, 200.0, 100.0, 200.0], "first").unwrap();
+        let second = HeightField::new(2, 2, vec![0.0, 200.0, 300.0, 400.0], "second").unwrap();
+
+        let first_z = terrain_z_at(
+            &spec,
+            Some(&first),
+            height_range_for_spec(&spec, Some(&first)),
+            1.0,
+            0.0,
+        );
+        let second_z = terrain_z_at(
+            &spec,
+            Some(&second),
+            height_range_for_spec(&spec, Some(&second)),
+            1.0,
+            0.0,
+        );
+
+        assert!((first_z - second_z).abs() < 0.0001);
+        assert!((first_z - (spec.base_mm + 15.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn shared_height_frame_reports_a_tile_below_its_datum() {
+        let spec = GenerationSpec {
+            elevation_datum_m: Some(100.0),
+            elevation_m_per_mm: Some(10.0),
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(2, 2, vec![90.0, 110.0, 120.0, 130.0], "test").unwrap();
+        let error = validate_height_frame(&spec, Some(&height))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("above this tile's minimum elevation 90.0 m"));
+        assert!(error.contains("regenerate adjacent tiles"));
+    }
+
+    #[test]
+    fn height_preview_reports_elevation_bounds_and_frame_fit() {
+        let spec = GenerationSpec {
+            elevation_datum_m: Some(100.0),
+            elevation_m_per_mm: Some(10.0),
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(2, 2, vec![90.0, 110.0, 120.0, 130.0], "test").unwrap();
+        let preview = build_height_preview(&spec, &height, 32).unwrap();
+
+        assert_eq!(preview["minimum_elevation_m"], 90.0);
+        assert_eq!(preview["maximum_elevation_m"], 130.0);
+        assert_eq!(preview["height_frame_compatible"], false);
+    }
+
+    #[test]
     fn shared_edges_are_identical_before_clearance() {
         let spec = GenerationSpec::default();
         let edge_samples = spec.samples_per_piece as usize;
@@ -4103,6 +4681,53 @@ mod tests {
                 .fold(f32::INFINITY, f32::min);
             assert!(matching_distance < 0.0001);
         }
+    }
+
+    #[test]
+    fn optional_adjacent_tile_edges_interlock_without_warping_the_grid() {
+        let left_spec = GenerationSpec {
+            solid_model: true,
+            adjacent_columns: 2,
+            adjacent_rows: 1,
+            adjacent_interlocks: true,
+            adjacent_tile_column: 0,
+            ..GenerationSpec::default()
+        };
+        let right_spec = GenerationSpec {
+            adjacent_tile_column: 1,
+            ..left_spec.clone()
+        };
+        let left = solid_outline(&left_spec, 96).unwrap();
+        let right = solid_outline(&right_spec, 96)
+            .unwrap()
+            .into_iter()
+            .map(|point| [point[0] + left_spec.width_mm, point[1]])
+            .collect::<Vec<_>>();
+
+        let edge_samples = left.len() / 4;
+        let left_shared = left[edge_samples..edge_samples * 2]
+            .iter()
+            .collect::<Vec<_>>();
+        let right_shared = right[edge_samples * 3..edge_samples * 4]
+            .iter()
+            .collect::<Vec<_>>();
+        assert!(
+            left_shared
+                .iter()
+                .any(|point| { (point[0] - left_spec.width_mm).abs() > left_spec.width_mm * 0.01 })
+        );
+        for point in left_shared.into_iter().skip(1) {
+            let distance = right_shared
+                .iter()
+                .map(|candidate| (point[0] - candidate[0]).hypot(point[1] - candidate[1]))
+                .fold(f32::INFINITY, f32::min);
+            assert!(distance < 0.001);
+        }
+        assert!(
+            left.iter()
+                .filter(|point| point[1] < 0.001)
+                .all(|point| point[1].abs() < 0.001)
+        );
     }
 
     #[test]
@@ -4246,6 +4871,70 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex[1] < spec.tray.rim_width_mm)
         );
+    }
+
+    #[test]
+    fn segmented_tray_exports_watertight_interlocking_parts() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            place_name: "Test".into(),
+            tray: TraySpec {
+                enabled: true,
+                segment_columns: 2,
+                segment_rows: 2,
+                contour_count: 5,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(
+            3,
+            3,
+            vec![0.0, 1.0, 2.0, 1.0, 3.0, 5.0, 2.0, 5.0, 8.0],
+            "test",
+        )
+        .unwrap();
+        let segments = build_tray_segments(&spec, Some(&height)).unwrap();
+
+        assert_eq!(segments.len(), 4);
+        for segment in &segments {
+            assert_watertight(segment);
+        }
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-segmented-tray-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        let mut export_spec = spec.clone();
+        export_spec.solid_model = true;
+        export_spec.samples_per_piece = 16;
+        export_spec.overlay_samples_per_piece = 32;
+        let manifest =
+            generate_project_with_height_field(&export_spec, &height, &output_dir).unwrap();
+        assert!(
+            manifest
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.name == "terrain-tray-r01-c01.3mf")
+        );
+        assert!(output_dir.join("terrain-tray-r02-c02.stl").is_file());
+        fs::remove_dir_all(&output_dir).unwrap();
+
+        let first = tray_segment_outline(80.0, 80.0, 2, 2, 0, 0);
+        let second = tray_segment_outline(80.0, 80.0, 2, 2, 0, 1);
+        let shared_gap = first
+            .iter()
+            .filter(|point| point[0] > 30.0)
+            .flat_map(|point| {
+                second
+                    .iter()
+                    .filter(move |candidate| candidate[0] < 50.0)
+                    .map(move |candidate| (point[0] - candidate[0]).hypot(point[1] - candidate[1]))
+            })
+            .fold(f32::INFINITY, f32::min);
+        assert!(shared_gap < 0.001);
     }
 
     #[test]
@@ -4463,7 +5152,7 @@ mod tests {
             solid_model: true,
             ..GenerationSpec::default()
         };
-        let outline = solid_outline(&spec, 32);
+        let outline = solid_outline(&spec, 32).unwrap();
         assert!(outline.iter().all(|point| {
             point[0] == 0.0
                 || point[0] == spec.width_mm

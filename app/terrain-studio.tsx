@@ -60,6 +60,8 @@ type GenerationSpec = {
     waterway_coverage_percent: number;
     road_width_mm: number;
     road_height_mm: number;
+    bridge_structure: "floating" | "supported";
+    bridge_thickness_mm: number;
     minimum_patch_mm: number;
   };
 };
@@ -175,6 +177,8 @@ const initialSpec: GenerationSpec = {
     waterway_coverage_percent: 12,
     road_width_mm: 0.7,
     road_height_mm: 0.2,
+    bridge_structure: "floating",
+    bridge_thickness_mm: 1.2,
     minimum_patch_mm: 1.2,
   },
 };
@@ -2017,6 +2021,56 @@ export function TerrainStudio() {
                       step={0.02}
                       onChange={(value) => updateColor("road_height_mm", value)}
                     />
+                    <div
+                      className="road-options bridge-options"
+                      role="group"
+                      aria-label="Bridge structure"
+                    >
+                      <strong>Bridge structure</strong>
+                      <label className="color-toggle">
+                        <input
+                          type="radio"
+                          name="bridge-structure"
+                          checked={
+                            spec.color_output.bridge_structure === "floating"
+                          }
+                          onChange={() =>
+                            updateColor("bridge_structure", "floating")
+                          }
+                        />
+                        <span>Floating</span>
+                      </label>
+                      <small>Uses a thick deck between the abutments</small>
+                      <label className="color-toggle">
+                        <input
+                          type="radio"
+                          name="bridge-structure"
+                          checked={
+                            spec.color_output.bridge_structure === "supported"
+                          }
+                          onChange={() =>
+                            updateColor("bridge_structure", "supported")
+                          }
+                        />
+                        <span>Fully supported</span>
+                      </label>
+                      <small>
+                        Fills from the deck down to the mapped ground or water
+                      </small>
+                    </div>
+                    {spec.color_output.bridge_structure === "floating" && (
+                      <RangeField
+                        label="Floating bridge thickness"
+                        value={spec.color_output.bridge_thickness_mm}
+                        unit=" mm"
+                        min={0.4}
+                        max={6}
+                        step={0.2}
+                        onChange={(value) =>
+                          updateColor("bridge_thickness_mm", value)
+                        }
+                      />
+                    )}
                   </>
                 )}
                 <p className="color-note">
@@ -2024,11 +2078,11 @@ export function TerrainStudio() {
                   add smooth lakes, rivers, streams, and canals when enabled.
                   Routes come from OpenStreetMap. The generator uses prominent
                   roads first, then trails only when no roads cross the model.
-                  Tagged bridges use separate floating decks between their
-                  terrain-height abutments; untagged routes follow the terrain.
-                  Tunnels stay hidden. Roads rise by the selected single-layer
-                  height. Snow is not live. Sides and bottoms use the rock
-                  color.
+                  Tagged bridges can use thick floating decks or solid support
+                  down to mapped ground or water. Untagged routes follow the
+                  terrain. Tunnels stay hidden. The road layer height controls
+                  the colored top surface, not bridge thickness. Snow is not
+                  live. Sides and bottoms use the rock color.
                 </p>
               </>
             )}

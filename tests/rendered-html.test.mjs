@@ -58,9 +58,12 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Thin dense road networks/);
   assert.match(html, /Overlay detail/);
   assert.match(html, /Road layer height/);
+  assert.match(html, /Bridge structure/);
+  assert.match(html, /Floating bridge thickness/);
+  assert.match(html, /Fully supported/);
   assert.match(
     html,
-    /Tagged bridges use separate floating decks between their terrain-height abutments/,
+    /Tagged bridges can use thick floating decks or solid support/,
   );
   assert.match(html, /#B8A890/i);
   assert.match(html, /SQLite/);

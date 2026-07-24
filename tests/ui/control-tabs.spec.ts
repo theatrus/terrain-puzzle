@@ -64,6 +64,23 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const surfaceColors = page.getByRole("group", { name: "Surface colors" });
   await expect(surfaceColors).toBeVisible();
   await expect(page.getByLabel("Find a place")).toBeHidden();
+  const floatingBridge = surfaceColors.getByRole("radio", {
+    name: "Floating",
+  });
+  const supportedBridge = surfaceColors.getByRole("radio", {
+    name: "Fully supported",
+  });
+  const bridgeThickness = surfaceColors.getByRole("slider", {
+    name: "Floating bridge thickness",
+  });
+  await expect(floatingBridge).toBeChecked();
+  await expect(bridgeThickness).toHaveValue("1.2");
+  await supportedBridge.check();
+  await expect(supportedBridge).toBeChecked();
+  await expect(bridgeThickness).toBeHidden();
+  await floatingBridge.check();
+  await bridgeThickness.fill("2.4");
+  await expect(bridgeThickness).toHaveValue("2.4");
   await surfaceColors.getByRole("checkbox").first().uncheck();
 
   await page.getByRole("tab", { name: "Buildings" }).click();

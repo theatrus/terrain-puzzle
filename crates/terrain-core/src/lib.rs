@@ -219,6 +219,14 @@ impl TraySpec {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BridgeStructure {
+    #[default]
+    Floating,
+    Supported,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorOutputSpec {
@@ -235,6 +243,8 @@ pub struct ColorOutputSpec {
     pub waterway_coverage_percent: f32,
     pub road_width_mm: f32,
     pub road_height_mm: f32,
+    pub bridge_structure: BridgeStructure,
+    pub bridge_thickness_mm: f32,
     pub minimum_patch_mm: f32,
 }
 
@@ -254,6 +264,8 @@ impl Default for ColorOutputSpec {
             waterway_coverage_percent: 12.0,
             road_width_mm: 0.7,
             road_height_mm: 0.2,
+            bridge_structure: BridgeStructure::Floating,
+            bridge_thickness_mm: 1.2,
             minimum_patch_mm: 1.2,
         }
     }
@@ -281,6 +293,9 @@ impl ColorOutputSpec {
         }
         if !(0.08..=0.4).contains(&self.road_height_mm) {
             bail!("road layer height must be between 0.08 and 0.4 mm");
+        }
+        if !(0.4..=6.0).contains(&self.bridge_thickness_mm) {
+            bail!("floating bridge thickness must be between 0.4 and 6 mm");
         }
         if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
             bail!("minimum color patch must be between 0.4 and 8 mm");
@@ -2545,6 +2560,7 @@ fn append_building_geometry(
                 polygon,
                 bottom,
                 top,
+                None,
                 SurfaceClass::Building,
                 "triangulate vector building footprint",
             )?);
@@ -2809,12 +2825,30 @@ fn build_road_polygon_shell(
                     )
         }
     };
-    let bottom = |point: [f32; 2]| road_z(point) - OVERLAY_TERRAIN_EMBED_MM;
     let top = |point: [f32; 2]| road_z(point) + spec.color_output.road_height_mm;
+    let is_bridge = line.bridge_elevations_m.is_some();
+    let bottom = |point: [f32; 2]| {
+        if !is_bridge {
+            return road_z(point) - OVERLAY_TERRAIN_EMBED_MM;
+        }
+        match spec.color_output.bridge_structure {
+            BridgeStructure::Floating => top(point) - spec.color_output.bridge_thickness_mm,
+            BridgeStructure::Supported => {
+                let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+                let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+                (terrain_z_at(spec, height_field, height_range, u, v) - OVERLAY_TERRAIN_EMBED_MM)
+                    .min(top(point) - OVERLAY_TERRAIN_EMBED_MM)
+            }
+        }
+    };
+    let boundary_step_mm = (is_bridge
+        && spec.color_output.bridge_structure == BridgeStructure::Supported)
+        .then_some(ROAD_VECTOR_STEP_MM);
     build_polygon_shell(
         polygon,
         bottom,
         top,
+        boundary_step_mm,
         SurfaceClass::Road,
         "triangulate vector road ribbon",
     )
@@ -2824,12 +2858,18 @@ fn build_polygon_shell(
     polygon: &Polygon<f64>,
     bottom: impl Fn([f32; 2]) -> f32,
     top: impl Fn([f32; 2]) -> f32,
+    boundary_step_mm: Option<f32>,
     material: SurfaceClass,
     error_context: &'static str,
 ) -> Result<MeshBuilder> {
     let rings = std::iter::once(polygon.exterior())
         .chain(polygon.interiors())
         .map(open_ring_points)
+        .map(|ring| {
+            boundary_step_mm
+                .map(|step| densify_closed_ring(&ring, step))
+                .unwrap_or(ring)
+        })
         .filter(|ring| ring.len() >= 3)
         .collect::<Vec<_>>();
     let mut points = Vec::new();
@@ -2931,6 +2971,20 @@ fn build_polygon_shell(
         );
     }
     Ok(output)
+}
+
+fn densify_closed_ring(points: &[[f32; 2]], maximum_step: f32) -> Vec<[f32; 2]> {
+    let mut dense = Vec::new();
+    for (start, end) in points.iter().zip(points.iter().cycle().skip(1)) {
+        let delta = [end[0] - start[0], end[1] - start[1]];
+        let length = delta[0].hypot(delta[1]);
+        let segments = (length / maximum_step.max(0.01)).ceil().max(1.0) as usize;
+        for index in 0..segments {
+            let t = index as f32 / segments as f32;
+            dense.push([start[0] + delta[0] * t, start[1] + delta[1] * t]);
+        }
+    }
+    dense
 }
 
 fn open_ring_points(ring: &LineString<f64>) -> Vec<[f32; 2]> {
@@ -4298,6 +4352,11 @@ mod tests {
         assert_eq!(spec.color_output.waterway_coverage_percent, 12.0);
         assert_eq!(spec.color_output.road_width_mm, 0.7);
         assert_eq!(spec.color_output.road_height_mm, 0.2);
+        assert_eq!(
+            spec.color_output.bridge_structure,
+            BridgeStructure::Floating
+        );
+        assert_eq!(spec.color_output.bridge_thickness_mm, 1.2);
     }
 
     #[test]
@@ -4639,6 +4698,7 @@ mod tests {
             &polygon,
             |_| 1.0,
             |_| 1.2,
+            None,
             SurfaceClass::Road,
             "test repeated boundary",
         )
@@ -4692,7 +4752,7 @@ mod tests {
     }
 
     #[test]
-    fn tagged_bridge_holds_its_deck_above_a_low_crossing() {
+    fn tagged_bridge_support_modes_span_a_low_crossing() {
         let height_field = HeightField::new(
             3,
             3,
@@ -4703,7 +4763,7 @@ mod tests {
         let mut bridge_field =
             SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "bridge").unwrap();
         bridge_field.paint_bridge_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, [100.0, 100.0]);
-        let spec = GenerationSpec {
+        let floating_spec = GenerationSpec {
             width_mm: 60.0,
             rows: 2,
             columns: 2,
@@ -4711,38 +4771,92 @@ mod tests {
             color_output: ColorOutputSpec {
                 enabled: true,
                 roads_enabled: true,
+                bridge_structure: BridgeStructure::Floating,
+                bridge_thickness_mm: 1.2,
                 ..ColorOutputSpec::default()
             },
             ..GenerationSpec::default()
         };
 
-        let bridge = build_piece(&spec, Some(&height_field), Some(&bridge_field), 0, 0).unwrap();
-        let road_vertex_indices = bridge
+        let floating = build_piece(
+            &floating_spec,
+            Some(&height_field),
+            Some(&bridge_field),
+            0,
+            0,
+        )
+        .unwrap();
+        let floating_road_vertices = floating
             .triangles
             .iter()
-            .zip(&bridge.materials)
+            .zip(&floating.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Road)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| floating.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        let floating_minimum_z = floating_road_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let floating_maximum_z = floating_road_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(!floating_road_vertices.is_empty());
+        assert!(
+            (floating_maximum_z
+                - floating_minimum_z
+                - floating_spec.color_output.bridge_thickness_mm)
+                .abs()
+                < 0.001
+        );
+        assert!(floating_minimum_z > floating_spec.base_mm + floating_spec.relief_mm - 1.1);
+        assert_watertight(&floating);
+
+        let supported_spec = GenerationSpec {
+            color_output: ColorOutputSpec {
+                bridge_structure: BridgeStructure::Supported,
+                ..floating_spec.color_output.clone()
+            },
+            ..floating_spec.clone()
+        };
+        let supported = build_piece(
+            &supported_spec,
+            Some(&height_field),
+            Some(&bridge_field),
+            0,
+            0,
+        )
+        .unwrap();
+        let supported_road_indices = supported
+            .triangles
+            .iter()
+            .zip(&supported.materials)
             .filter(|(_, material)| **material == SurfaceClass::Road)
             .flat_map(|(triangle, _)| triangle)
             .copied()
             .collect::<HashSet<_>>();
-        let terrain_vertex_indices = bridge
+        let terrain_vertex_indices = supported
             .triangles
             .iter()
-            .zip(&bridge.materials)
+            .zip(&supported.materials)
             .filter(|(_, material)| **material != SurfaceClass::Road)
             .flat_map(|(triangle, _)| triangle)
             .copied()
             .collect::<HashSet<_>>();
-        let minimum_deck_z = road_vertex_indices
+        let supported_minimum_z = supported_road_indices
             .iter()
-            .map(|index| bridge.vertices[*index as usize][2])
+            .map(|index| supported.vertices[*index as usize][2])
             .fold(f32::INFINITY, f32::min);
-        assert!(!road_vertex_indices.is_empty());
-        assert!(road_vertex_indices.is_disjoint(&terrain_vertex_indices));
-        assert!(minimum_deck_z > spec.base_mm + spec.relief_mm - 0.05);
-        let preview = build_preview(&spec, Some(&height_field), Some(&bridge_field), 3);
+        assert!(!supported_road_indices.is_empty());
+        assert!(supported_road_indices.is_disjoint(&terrain_vertex_indices));
+        assert!(
+            (supported_minimum_z - (supported_spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs()
+                < 0.01
+        );
+        let preview = build_preview(&supported_spec, Some(&height_field), Some(&bridge_field), 3);
         assert!(preview["values"][4].as_f64().unwrap() < 0.1);
-        assert_watertight(&bridge);
+        assert_watertight(&supported);
     }
 
     #[test]

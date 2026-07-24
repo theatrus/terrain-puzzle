@@ -614,8 +614,8 @@ fieldset.control-section .road-options {
 .model-controls {
   display: grid;
   gap: 0 18px;
-  grid-column: 1 / 8;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .model-controls .place-search,
@@ -960,22 +960,24 @@ fieldset.control-section .road-options {
 }
 
 .model-mode {
+  align-items: stretch;
   border: 0;
+  border-bottom: 1px solid var(--line);
   border-top: 1px solid var(--line);
   display: grid;
   gap: 8px;
-  grid-column: 8 / -1;
-  grid-template-columns: 1fr 1fr;
-  margin: 0;
-  padding: 15px 0 0;
+  grid-column: span 2;
+  grid-template-columns: 72px repeat(2, minmax(0, 1fr));
+  margin: 8px 0 5px;
+  padding: 8px 0;
 }
 
-.model-mode legend {
-  float: left;
-  font-size: 12px;
-  font-weight: 660;
-  margin-bottom: 12px;
-  width: 100%;
+.model-mode-label {
+  align-self: center;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
 }
 
 .model-mode button {
@@ -985,9 +987,10 @@ fieldset.control-section .road-options {
   color: var(--ink);
   cursor: pointer;
   display: grid;
-  gap: 10px;
-  grid-template-columns: 32px 1fr;
-  padding: 11px;
+  gap: 8px;
+  grid-template-columns: 24px 1fr;
+  min-height: 48px;
+  padding: 7px 9px;
   text-align: left;
 }
 
@@ -1015,8 +1018,8 @@ fieldset.control-section .road-options {
 }
 
 .mode-mark {
-  height: 28px;
-  width: 28px;
+  height: 22px;
+  width: 22px;
 }
 
 .puzzle-mark {
@@ -1049,6 +1052,7 @@ fieldset.control-section .road-options {
   float: left;
   font-size: 12px;
   font-weight: 660;
+  grid-column: 1 / -1;
   margin-bottom: 12px;
   width: 100%;
 }
@@ -1348,12 +1352,6 @@ fieldset.control-section .road-options {
   text-align: left;
 }
 
-@media (max-width: 1280px) {
-  .model-controls {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 900px) {
   body {
     overflow: auto;
@@ -1389,6 +1387,19 @@ fieldset.control-section .road-options {
   .control-tabs,
   .model-controls,
   .model-mode {
+    grid-column: 1 / -1;
+  }
+
+  .model-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-mode {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-mode-label {
     grid-column: 1 / -1;
   }
 

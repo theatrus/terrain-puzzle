@@ -1829,6 +1829,45 @@ export function TerrainStudio() {
               <small>The tray adds the coordinates after this name.</small>
             </label>
 
+            <div
+              className="model-mode"
+              role="group"
+              aria-label="Model type"
+            >
+              <strong className="model-mode-label">Model type</strong>
+              <button
+                type="button"
+                className={!spec.solid_model ? "active" : ""}
+                onClick={() => update("solid_model", false)}
+              >
+                <span className="mode-mark puzzle-mark" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>
+                  <strong>Jigsaw puzzle</strong>
+                  <small>
+                    {spec.puzzle_tabs
+                      ? "Separate interlocking pieces"
+                      : "Separate pieces with plain cuts"}
+                  </small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={spec.solid_model ? "active" : ""}
+                onClick={() => update("solid_model", true)}
+              >
+                <span className="mode-mark solid-mark" aria-hidden="true" />
+                <span>
+                  <strong>Solid terrain</strong>
+                  <small>One watertight model, no cuts</small>
+                </span>
+              </button>
+            </div>
+
             <RangeField
               label="Ground span"
               value={spec.ground_span_km}
@@ -2152,41 +2191,6 @@ export function TerrainStudio() {
                 </p>
               </>
             )}
-          </fieldset>
-
-          <fieldset className="model-mode" hidden={activeSection !== "model"}>
-            <legend>Model type</legend>
-            <button
-              type="button"
-              className={!spec.solid_model ? "active" : ""}
-              onClick={() => update("solid_model", false)}
-            >
-              <span className="mode-mark puzzle-mark" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-                <i />
-              </span>
-              <span>
-                <strong>Jigsaw puzzle</strong>
-                <small>
-                  {spec.puzzle_tabs
-                    ? "Separate interlocking pieces"
-                    : "Separate pieces with plain cuts"}
-                </small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={spec.solid_model ? "active" : ""}
-              onClick={() => update("solid_model", true)}
-            >
-              <span className="mode-mark solid-mark" aria-hidden="true" />
-              <span>
-                <strong>Solid terrain</strong>
-                <small>One watertight model, no cuts</small>
-              </span>
-            </button>
           </fieldset>
 
           {!spec.solid_model && (

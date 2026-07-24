@@ -26,6 +26,25 @@ test("switches between the reflowed control panels", async ({ page }) => {
   ).toBeVisible();
   await expect(generate).toHaveAttribute("form", "terrain-controls");
   await expect(page.getByLabel("Find a place")).toBeVisible();
+  const modelType = page.getByRole("group", { name: "Model type" });
+  const puzzleModel = modelType.getByRole("button", {
+    name: /Jigsaw puzzle/,
+  });
+  const solidModel = modelType.getByRole("button", {
+    name: /Solid terrain/,
+  });
+  await expect(modelType).toBeVisible();
+  const puzzleModelBounds = await puzzleModel.boundingBox();
+  const solidModelBounds = await solidModel.boundingBox();
+  expect(puzzleModelBounds).not.toBeNull();
+  expect(solidModelBounds).not.toBeNull();
+  expect(puzzleModelBounds!.height).toBeLessThan(64);
+  expect(puzzleModelBounds!.width).toBeLessThan(340);
+  expect(Math.abs(puzzleModelBounds!.y - solidModelBounds!.y)).toBeLessThan(2);
+  await solidModel.click();
+  await expect(page.getByRole("group", { name: "Piece layout" })).toBeHidden();
+  await puzzleModel.click();
+  await expect(page.getByRole("group", { name: "Piece layout" })).toBeVisible();
   const pieceShape = page.getByRole("group", { name: "Piece shape" });
   const preview = page.getByLabel("Interactive 3D terrain preview");
   const straightGrid = pieceShape.getByRole("checkbox", {

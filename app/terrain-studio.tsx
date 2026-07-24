@@ -72,6 +72,11 @@ type Artifact = {
   bytes: number;
 };
 
+type ArtifactFeedback = {
+  name: string;
+  state: "saving" | "saved" | "sent";
+};
+
 type Job = {
   id: string;
   status: "queued" | "running" | "complete" | "failed" | "canceled";
@@ -1188,14 +1193,14 @@ function ReliefPreview({
             ))}
         </div>
       )}
-      <div className="preview-label">
+      <div className={`preview-label ${previewState}`}>
         <span>
           {previewState === "generated"
             ? "Generated terrain"
             : previewState === "elevation"
               ? "Live elevation preview"
               : previewState === "loading"
-                ? "Loading local elevation"
+                ? "Sampling preview elevation"
                 : "Fast shape preview"}{" "}
           ·{" "}
           {spec.solid_model
@@ -1284,7 +1289,8 @@ export function TerrainStudio() {
   const [submitting, setSubmitting] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [savingArtifact, setSavingArtifact] = useState<string | null>(null);
+  const [artifactFeedback, setArtifactFeedback] =
+    useState<ArtifactFeedback | null>(null);
   const [placeQuery, setPlaceQuery] = useState("");
   const [placeResults, setPlaceResults] = useState<PlaceResult[]>([]);
   const [placeMessage, setPlaceMessage] = useState<string | null>(null);
@@ -1529,6 +1535,7 @@ export function TerrainStudio() {
     setSubmitting(true);
     setMessage(null);
     setJob(null);
+    setArtifactFeedback(null);
     setGeneratedPreview(null);
     try {
       const response = await fetch(`${API_URL}/api/jobs`, {
@@ -1586,16 +1593,22 @@ export function TerrainStudio() {
 
   const saveDesktopArtifact = async (artifact: Artifact) => {
     if (!job || !IS_TAURI) return;
-    setSavingArtifact(artifact.name);
+    setArtifactFeedback({ name: artifact.name, state: "saving" });
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const savedBytes = await invoke<number | null>("save_artifact", {
         jobId: job.id,
         artifactName: artifact.name,
       });
-      if (savedBytes === null) return;
+      if (savedBytes === null) {
+        setArtifactFeedback(null);
+        setMessage("Save canceled.");
+        return;
+      }
+      setArtifactFeedback({ name: artifact.name, state: "saved" });
       setMessage(`Saved ${artifact.name}.`);
     } catch (error) {
+      setArtifactFeedback(null);
       setMessage(
         error instanceof Error
           ? error.message
@@ -1603,9 +1616,19 @@ export function TerrainStudio() {
             ? error
             : `Could not save ${artifact.name}.`,
       );
-    } finally {
-      setSavingArtifact(null);
     }
+  };
+
+  const noteWebDownload = (artifact: Artifact) => {
+    setArtifactFeedback({ name: artifact.name, state: "sent" });
+    setMessage(`Sent ${artifact.name} to your browser downloads.`);
+  };
+
+  const artifactStatus = (artifact: Artifact, fallback: string) => {
+    if (artifactFeedback?.name !== artifact.name) return fallback;
+    if (artifactFeedback.state === "saving") return "Choosing & saving…";
+    if (artifactFeedback.state === "saved") return "Saved";
+    return "Sent to browser";
   };
 
   const statusLabel = useMemo(() => {
@@ -1614,26 +1637,75 @@ export function TerrainStudio() {
     if (job.status === "failed") return job.error ?? "Generation failed.";
     if (job.status === "canceled") return "Generation canceled.";
     if (job.status === "queued") return "Waiting for the generator…";
-    if (job.progress < 40) return "Sampling global elevation…";
+    if (job.progress < 8) return "Preparing source data…";
+    if (job.progress < 40) {
+      return "Sampling elevation and fetching source tiles…";
+    }
     if (
       job.progress < 65 &&
       (job.spec.color_output.enabled || job.spec.buildings.enabled)
     ) {
       if (job.spec.buildings.enabled && !job.spec.color_output.enabled) {
-        return "Mapping building footprints…";
+        return "Downloading and mapping building footprints…";
       }
       if (job.spec.buildings.enabled) {
         return job.spec.color_output.roads_enabled
-          ? "Mapping land cover, routes, and buildings…"
-          : "Mapping land cover and buildings…";
+          ? "Downloading and mapping land cover, routes, and buildings…"
+          : "Downloading and mapping land cover and buildings…";
       }
       return job.spec.color_output.roads_enabled
-        ? "Mapping land cover, roads, or fallback trails…"
-        : "Mapping forest, rock, snow, and water…";
+        ? "Downloading and mapping land cover, roads, or fallback trails…"
+        : "Downloading and mapping forest, rock, snow, and water…";
     }
+    if (job.progress >= 96) return "Writing preview and print files…";
     return job.spec.solid_model
       ? "Building one watertight terrain model…"
       : "Building watertight pieces…";
+  }, [job]);
+
+  const generationStages = useMemo(() => {
+    if (!job) return [];
+    const hasSurface =
+      job.spec.color_output.enabled || job.spec.buildings.enabled;
+    const stages = [
+      { key: "elevation", label: "Elevation", start: 0, end: 40 },
+      ...(hasSurface
+        ? [{ key: "surface", label: "Map details", start: 40, end: 65 }]
+        : []),
+      { key: "geometry", label: "Geometry", start: hasSurface ? 65 : 40, end: 99 },
+      { key: "files", label: "Print files", start: 99, end: 100 },
+    ];
+    return stages.map((stage) => {
+      const done = job.status === "complete" || job.progress >= stage.end;
+      const stopped =
+        ["failed", "canceled"].includes(job.status) &&
+        job.progress >= stage.start &&
+        !done;
+      const active =
+        ["queued", "running"].includes(job.status) &&
+        job.progress >= stage.start &&
+        !done;
+      const localProgress = Math.round(
+        ((job.progress - stage.start) / (stage.end - stage.start)) * 100,
+      );
+      return {
+        ...stage,
+        state: done ? "done" : stopped ? "stopped" : active ? "active" : "pending",
+        detail: done
+          ? stage.key === "files"
+            ? "Ready"
+            : "Done"
+          : active
+            ? job.status === "queued"
+              ? "Queued"
+              : `${Math.max(0, Math.min(100, localProgress))}%`
+            : stopped
+              ? job.status === "canceled"
+                ? "Canceled"
+                : "Failed"
+            : "Next",
+      };
+    });
   }, [job]);
 
   const preview = generatedPreview ?? elevationPreview;
@@ -1659,7 +1731,7 @@ export function TerrainStudio() {
           </span>
         </a>
         <div className="topbar-actions">
-          <div className="build-state">
+          <div className={`build-state ${job?.status ?? "idle"}`}>
             <span />
             {job ? statusLabel : "Local engine · SQLite"}
           </div>
@@ -2512,9 +2584,28 @@ export function TerrainStudio() {
                 <span className="status-dot" />
                 <strong>{message ?? statusLabel}</strong>
               </div>
+              {job && (
+                <ol
+                  className="job-steps"
+                  aria-label="Generation progress"
+                >
+                  {generationStages.map((stage) => (
+                    <li key={stage.key} className={stage.state}>
+                      <span aria-hidden="true" />
+                      <div>
+                        <strong>{stage.label}</strong>
+                        <small>{stage.detail}</small>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              )}
               {job && !["failed", "canceled"].includes(job.status) && (
-                <div className="progress-track">
-                  <span style={{ width: `${job.progress}%` }} />
+                <div className="job-progress">
+                  <div className="progress-track">
+                    <span style={{ width: `${job.progress}%` }} />
+                  </div>
+                  <output>{job.progress}%</output>
                 </div>
               )}
               {job?.status === "complete" && (
@@ -2530,24 +2621,30 @@ export function TerrainStudio() {
                         <button
                           key={artifact.name}
                           type="button"
-                          disabled={savingArtifact !== null}
+                          disabled={artifactFeedback?.state === "saving"}
                           onClick={() => void saveDesktopArtifact(artifact)}
                         >
                           <span>{artifact.name}</span>
-                          <small>
-                            {savingArtifact === artifact.name
-                              ? "Choosing…"
-                              : `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`}
+                          <small aria-live="polite">
+                            {artifactStatus(
+                              artifact,
+                              `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`,
+                            )}
                           </small>
                         </button>
                       ) : (
                         <a
                           key={artifact.name}
                           href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
+                          download={artifact.name}
+                          onClick={() => noteWebDownload(artifact)}
                         >
                           <span>{artifact.name}</span>
-                          <small>
-                            {(artifact.bytes / 1024 / 1024).toFixed(1)} MB
+                          <small aria-live="polite">
+                            {artifactStatus(
+                              artifact,
+                              `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`,
+                            )}
                           </small>
                         </a>
                       ),
@@ -2562,19 +2659,25 @@ export function TerrainStudio() {
                             <button
                               key={artifact.name}
                               type="button"
-                              disabled={savingArtifact !== null}
+                              disabled={artifactFeedback?.state === "saving"}
                               onClick={() => void saveDesktopArtifact(artifact)}
                             >
-                              {savingArtifact === artifact.name
-                                ? `Choosing ${artifact.name}…`
-                                : artifact.name}
+                              <span>{artifact.name}</span>
+                              <small aria-live="polite">
+                                {artifactStatus(artifact, "Save STL")}
+                              </small>
                             </button>
                           ) : (
                             <a
                               key={artifact.name}
                               href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
+                              download={artifact.name}
+                              onClick={() => noteWebDownload(artifact)}
                             >
-                              {artifact.name}
+                              <span>{artifact.name}</span>
+                              <small aria-live="polite">
+                                {artifactStatus(artifact, "Download STL")}
+                              </small>
                             </a>
                           ),
                         )}

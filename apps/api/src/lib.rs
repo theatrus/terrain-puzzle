@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -358,7 +358,12 @@ async fn create_job(
             };
             if let Some(failure) = failure {
                 error!(job_id = %id, error = %failure, "generation failed");
-                let _ = update_job(&worker_state, &id, "failed", 100, &[], Some(&failure));
+                let progress = find_job(&worker_state, &id)
+                    .ok()
+                    .flatten()
+                    .map(|job| job.progress)
+                    .unwrap_or(0);
+                let _ = update_job(&worker_state, &id, "failed", progress, &[], Some(&failure));
             }
         }
         if let Ok(mut active_jobs) = worker_state.active_jobs.lock() {
@@ -500,9 +505,22 @@ fn run_job(
 ) -> Result<()> {
     let job_started = Instant::now();
     ensure_job_active(cancellation)?;
-    update_job(state, id, "running", 10, &[], None)?;
+    update_job(state, id, "running", 8, &[], None)?;
     let phase_started = Instant::now();
-    let height_field = elevation::fetch_height_field(spec, &state.map_cache_dir.join("elevation"))?;
+    let mut last_elevation_progress = 8;
+    let height_field = elevation::fetch_height_field_with_progress(
+        spec,
+        &state.map_cache_dir.join("elevation"),
+        |fraction| {
+            ensure_job_active(cancellation)?;
+            let progress = elevation_job_progress(fraction);
+            if progress > last_elevation_progress {
+                update_job(state, id, "running", progress, &[], None)?;
+                last_elevation_progress = progress;
+            }
+            Ok(())
+        },
+    )?;
     ensure_job_active(cancellation)?;
     info!(
         job_id = %id,
@@ -512,6 +530,7 @@ fn run_job(
     );
     update_job(state, id, "running", 40, &[], None)?;
     let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
+        update_job(state, id, "running", 42, &[], None)?;
         let phase_started = Instant::now();
         let field = surface::fetch_surface_field(spec, &height_field, &state.map_cache_dir)?;
         ensure_job_active(cancellation)?;
@@ -521,19 +540,29 @@ fn run_job(
             elapsed_ms = phase_started.elapsed().as_millis() as u64,
             "generation phase complete"
         );
-        update_job(state, id, "running", 65, &[], None)?;
         Some(field)
     } else {
         None
     };
+    update_job(state, id, "running", 65, &[], None)?;
     let output_dir = state.jobs_dir.join(id);
     let phase_started = Instant::now();
+    let mesh_progress = AtomicI64::new(65);
     let manifest = generate_project_with_fields_cancellable(
         spec,
         &height_field,
         surface_field.as_ref(),
         &output_dir,
         &|| cancellation.load(Ordering::Acquire),
+        &|fraction| {
+            ensure_job_active(cancellation)?;
+            let progress = mesh_job_progress(fraction);
+            let previous = mesh_progress.fetch_max(progress, Ordering::AcqRel);
+            if progress > previous {
+                update_job(state, id, "running", progress, &[], None)?;
+            }
+            Ok(())
+        },
     )?;
     ensure_job_active(cancellation)?;
     info!(
@@ -556,6 +585,14 @@ fn ensure_job_active(cancellation: &AtomicBool) -> Result<()> {
         anyhow::bail!("generation canceled");
     }
     Ok(())
+}
+
+fn elevation_job_progress(fraction: f32) -> i64 {
+    (8.0 + fraction.clamp(0.0, 1.0) * 31.0).round() as i64
+}
+
+fn mesh_job_progress(fraction: f32) -> i64 {
+    (65.0 + fraction.clamp(0.0, 1.0) * 34.0).round() as i64
 }
 
 fn insert_job(state: &AppState, job: &Job) -> Result<()> {
@@ -766,5 +803,15 @@ mod tests {
         assert_eq!(canceled.progress, 40);
         assert!(canceled.artifacts.is_empty());
         assert!(!mark_job_canceled(&state, &job.id).unwrap());
+    }
+
+    #[test]
+    fn maps_real_phase_progress_into_the_job_range() {
+        assert_eq!(elevation_job_progress(0.0), 8);
+        assert_eq!(elevation_job_progress(0.5), 24);
+        assert_eq!(elevation_job_progress(1.0), 39);
+        assert_eq!(mesh_job_progress(0.0), 65);
+        assert_eq!(mesh_job_progress(0.5), 82);
+        assert_eq!(mesh_job_progress(1.0), 99);
     }
 }

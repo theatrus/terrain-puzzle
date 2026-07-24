@@ -264,6 +264,7 @@ test("rotates, zooms, and resets the interactive 3D preview", async ({
 test("turns Generate into Cancel while a job is active", async ({ page }) => {
   const jobId = "8b4165dc-9b47-4fa2-9f75-2ea36b9dff45";
   let cancelRequested = false;
+  let jobSpec: Record<string, unknown> = {};
 
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();
@@ -275,14 +276,15 @@ test("turns Generate into Cancel while a job is active", async ({ page }) => {
       return;
     }
     if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON();
       await route.fulfill({
         status: 202,
         json: {
           id: jobId,
-          status: "queued",
-          progress: 0,
+          status: "running",
+          progress: 24,
           artifacts: [],
-          spec: request.postDataJSON(),
+          spec: jobSpec,
         },
       });
       return;
@@ -296,9 +298,9 @@ test("turns Generate into Cancel while a job is active", async ({ page }) => {
         json: {
           id: jobId,
           status: "canceled",
-          progress: 0,
+          progress: 24,
           artifacts: [],
-          spec: {},
+          spec: jobSpec,
         },
       });
       return;
@@ -312,6 +314,13 @@ test("turns Generate into Cancel while a job is active", async ({ page }) => {
   const cancel = page.getByRole("button", { name: /^Cancel$/ });
   await expect(cancel).toBeVisible();
   await expect(cancel).toHaveClass(/cancel/);
+  await expect(
+    page.getByText("Sampling elevation and fetching source tiles…").first(),
+  ).toBeVisible();
+  const steps = page.getByRole("list", { name: "Generation progress" });
+  await expect(steps).toContainText("Elevation");
+  await expect(steps).toContainText("60%");
+  await expect(page.locator(".job-progress output")).toHaveText("24%");
   await cancel.click();
 
   await expect(page.getByRole("button", { name: /^Generate/ })).toBeVisible();
@@ -357,6 +366,19 @@ test("keeps direct artifact downloads in the web app", async ({ page }) => {
       });
       return;
     }
+    if (
+      url.pathname.endsWith("/downloads/terrain.3mf") &&
+      request.method() === "GET"
+    ) {
+      await route.fulfill({
+        body: "3mf data",
+        headers: {
+          "content-disposition": 'attachment; filename="terrain.3mf"',
+          "content-type": "model/3mf",
+        },
+      });
+      return;
+    }
     await route.abort();
   });
 
@@ -369,10 +391,22 @@ test("keeps direct artifact downloads in the web app", async ({ page }) => {
     "href",
     "http://127.0.0.1:8787/api/jobs/e2ba221e-a689-4b59-9d5f-ae9b883596a1/downloads/terrain.3mf",
   );
+  const completedSteps = page.getByRole("list", {
+    name: "Generation progress",
+  });
+  await expect(completedSteps).toContainText("Print files");
+  await expect(completedSteps).toContainText("Ready");
+
+  const download = page.waitForEvent("download");
+  await model.click();
+  await expect(model).toContainText("Sent to browser");
+  expect((await download).suggestedFilename()).toBe("terrain.3mf");
+  await expect(
+    page.getByText("Sent terrain.3mf to your browser downloads."),
+  ).toBeVisible();
 
   await page.getByText("STL models").click();
-  await expect(page.getByRole("link", { name: "piece-01.stl" })).toHaveAttribute(
-    "href",
-    /\/downloads\/piece-01\.stl$/,
-  );
+  await expect(
+    page.getByRole("link", { name: /piece-01\.stl/ }),
+  ).toHaveAttribute("href", /\/downloads\/piece-01\.stl$/);
 });

@@ -2326,7 +2326,7 @@ fn coordinate_label(value: f64, positive: char, negative: char) -> String {
 }
 
 pub fn generate_project(spec: &GenerationSpec, output_dir: &Path) -> Result<ProjectManifest> {
-    generate_project_inner(spec, None, None, output_dir, &|| false)
+    generate_project_inner(spec, None, None, output_dir, &|| false, &|_| Ok(()))
 }
 
 pub fn generate_project_with_height_field(
@@ -2334,7 +2334,14 @@ pub fn generate_project_with_height_field(
     height_field: &HeightField,
     output_dir: &Path,
 ) -> Result<ProjectManifest> {
-    generate_project_inner(spec, Some(height_field), None, output_dir, &|| false)
+    generate_project_inner(
+        spec,
+        Some(height_field),
+        None,
+        output_dir,
+        &|| false,
+        &|_| Ok(()),
+    )
 }
 
 pub fn generate_project_with_fields(
@@ -2343,9 +2350,14 @@ pub fn generate_project_with_fields(
     surface_field: Option<&SurfaceField>,
     output_dir: &Path,
 ) -> Result<ProjectManifest> {
-    generate_project_inner(spec, Some(height_field), surface_field, output_dir, &|| {
-        false
-    })
+    generate_project_inner(
+        spec,
+        Some(height_field),
+        surface_field,
+        output_dir,
+        &|| false,
+        &|_| Ok(()),
+    )
 }
 
 pub fn generate_project_with_fields_cancellable(
@@ -2354,6 +2366,7 @@ pub fn generate_project_with_fields_cancellable(
     surface_field: Option<&SurfaceField>,
     output_dir: &Path,
     is_cancelled: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(f32) -> Result<()> + Sync),
 ) -> Result<ProjectManifest> {
     generate_project_inner(
         spec,
@@ -2361,6 +2374,7 @@ pub fn generate_project_with_fields_cancellable(
         surface_field,
         output_dir,
         is_cancelled,
+        on_progress,
     )
 }
 
@@ -2384,6 +2398,7 @@ fn generate_project_inner(
     surface_field: Option<&SurfaceField>,
     output_dir: &Path,
     is_cancelled: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(f32) -> Result<()> + Sync),
 ) -> Result<ProjectManifest> {
     spec.validate()?;
     ensure_generation_active(is_cancelled)?;
@@ -2457,6 +2472,7 @@ fn generate_project_inner(
             artifacts.push(artifact);
             project_writer.write_mesh(&mesh)?;
         }
+        on_progress(batch_end as f32 / object_count as f32 * 0.9)?;
     }
     ensure_generation_active(is_cancelled)?;
     project_writer.finish()?;
@@ -2484,6 +2500,7 @@ fn generate_project_inner(
         tray_writer.finish()?;
         artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
     }
+    on_progress(0.95)?;
 
     ensure_generation_active(is_cancelled)?;
     let preview_path = output_dir.join("preview.json");
@@ -2492,6 +2509,7 @@ fn generate_project_inner(
     fs::write(&preview_path, serde_json::to_vec(&preview)?)
         .with_context(|| format!("write {}", preview_path.display()))?;
     artifacts.push(file_artifact(&preview_path, "application/json")?);
+    on_progress(0.98)?;
 
     let manifest = ProjectManifest {
         generator: format!("toposaic/{}", env!("CARGO_PKG_VERSION")),
@@ -2511,6 +2529,7 @@ fn generate_project_inner(
     complete
         .artifacts
         .push(file_artifact(&manifest_path, "application/json")?);
+    on_progress(1.0)?;
     Ok(complete)
 }
 
@@ -4398,7 +4417,14 @@ mod tests {
             samples_per_piece: 16,
             ..GenerationSpec::default()
         };
-        let manifest = generate_project(&spec, &output_dir).unwrap();
+        let progress = std::sync::Mutex::new(Vec::new());
+        let manifest =
+            generate_project_inner(&spec, None, None, &output_dir, &|| false, &|value| {
+                progress.lock().unwrap().push(value);
+                Ok(())
+            })
+            .unwrap();
+        let progress = progress.into_inner().unwrap();
 
         assert!(output_dir.join("toposaic.3mf").is_file());
         assert!(output_dir.join("piece-1-1.stl").is_file());
@@ -4417,6 +4443,8 @@ mod tests {
                 "piece-2-2.stl",
             ]
         );
+        assert!(progress.windows(2).all(|values| values[0] <= values[1]));
+        assert_eq!(progress.last().copied(), Some(1.0));
 
         std::fs::remove_dir_all(output_dir).unwrap();
     }
@@ -5408,10 +5436,14 @@ mod tests {
             "toposaic-canceled-core-test-{}",
             std::process::id()
         ));
-        let result =
-            generate_project_inner(&GenerationSpec::default(), None, None, &output_dir, &|| {
-                true
-            });
+        let result = generate_project_inner(
+            &GenerationSpec::default(),
+            None,
+            None,
+            &output_dir,
+            &|| true,
+            &|_| Ok(()),
+        );
 
         assert_eq!(result.unwrap_err().to_string(), "generation canceled");
         assert!(!output_dir.exists());

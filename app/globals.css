@@ -154,6 +154,23 @@ a {
   width: 11px;
 }
 
+.build-state.queued > span,
+.build-state.running > span {
+  animation: job-pulse 1.2s ease-in-out infinite;
+  background: #d5a744;
+  border-color: #f0e2b8;
+}
+
+.build-state.failed > span {
+  background: #c45f4d;
+  border-color: #efd2cc;
+}
+
+.build-state.canceled > span {
+  background: #858d89;
+  border-color: #d8ddda;
+}
+
 .workspace {
   --controls-share: 63fr;
   --visual-share: 37fr;
@@ -501,6 +518,18 @@ a {
   font-weight: 720;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.preview-label.loading span::before {
+  animation: job-pulse 1.2s ease-in-out infinite;
+  background: #d5a744;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(213, 167, 68, 0.18);
+  content: "";
+  display: inline-block;
+  height: 7px;
+  margin-right: 8px;
+  width: 7px;
 }
 
 .preview-label strong {
@@ -1296,10 +1325,96 @@ fieldset.control-section .road-options {
   background: #858d89;
 }
 
+.job-steps {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+  margin: 13px 0 11px;
+  padding: 0;
+}
+
+.job-steps li {
+  align-items: center;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.job-steps li > span {
+  background: #c8cdc5;
+  border-radius: 50%;
+  flex: 0 0 7px;
+  height: 7px;
+  width: 7px;
+}
+
+.job-steps li div {
+  display: flex;
+  justify-content: space-between;
+  min-width: 0;
+  width: 100%;
+}
+
+.job-steps strong,
+.job-steps small {
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.job-steps small {
+  color: inherit;
+}
+
+.job-steps li.done {
+  color: var(--moss);
+}
+
+.job-steps li.done > span {
+  background: #50a56a;
+}
+
+.job-steps li.active {
+  background: var(--panel);
+  border-color: var(--moss);
+  color: var(--ink);
+}
+
+.job-steps li.active > span {
+  animation: job-pulse 1.2s ease-in-out infinite;
+  background: #d5a744;
+  box-shadow: 0 0 0 3px rgba(213, 167, 68, 0.18);
+}
+
+.job-steps li.stopped {
+  color: #7a554c;
+}
+
+.job-steps li.stopped > span {
+  background: #c45f4d;
+}
+
+@keyframes job-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
+.job-progress {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+
 .progress-track {
   background: #d8dbd1;
+  flex: 1;
   height: 3px;
-  margin-top: 12px;
+  margin: 0;
 }
 
 .progress-track span {
@@ -1307,6 +1422,14 @@ fieldset.control-section .road-options {
   display: block;
   height: 100%;
   transition: width 300ms ease;
+}
+
+.job-progress output {
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  min-width: 28px;
+  text-align: right;
 }
 
 .downloads {
@@ -1361,13 +1484,17 @@ fieldset.control-section .road-options {
 
 .downloads details a,
 .downloads details button {
+  align-items: center;
   background: none;
   border: 0;
   color: var(--moss);
   cursor: pointer;
+  display: flex;
   font: inherit;
+  justify-content: space-between;
   padding: 0;
   text-align: left;
+  width: 100%;
 }
 
 @media (max-width: 900px) {
@@ -1494,6 +1621,10 @@ fieldset.control-section .road-options {
     grid-column: 1 / -1;
   }
 
+  .job-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .map-shell,
   .relief-shell {
     min-height: 360px;
@@ -1504,6 +1635,7 @@ fieldset.control-section .road-options {
   *,
   *::before,
   *::after {
+    animation-duration: 0.01ms !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }

@@ -17,11 +17,15 @@ const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const TILE_BASE_URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
 const ATTRIBUTION_URL: &str = "https://github.com/tilezen/joerd/blob/master/docs/attribution.md";
 
-pub fn fetch_height_field(spec: &GenerationSpec, cache_dir: &Path) -> Result<HeightField> {
+pub fn fetch_height_field_with_progress(
+    spec: &GenerationSpec,
+    cache_dir: &Path,
+    on_progress: impl FnMut(f32) -> Result<()>,
+) -> Result<HeightField> {
     let samples = spec.effective_samples_per_piece();
     let sample_width = (spec.columns * samples + 1) as usize;
     let sample_height = (spec.rows * samples + 1) as usize;
-    fetch_height_field_at_size(spec, cache_dir, sample_width, sample_height)
+    fetch_height_field_at_size(spec, cache_dir, sample_width, sample_height, on_progress)
 }
 
 pub fn fetch_preview_height_field(
@@ -30,7 +34,7 @@ pub fn fetch_preview_height_field(
     size: usize,
 ) -> Result<HeightField> {
     let size = size.clamp(32, 128);
-    fetch_height_field_at_size(spec, cache_dir, size, size)
+    fetch_height_field_at_size(spec, cache_dir, size, size, |_| Ok(()))
 }
 
 fn fetch_height_field_at_size(
@@ -38,6 +42,7 @@ fn fetch_height_field_at_size(
     cache_dir: &Path,
     sample_width: usize,
     sample_height: usize,
+    mut on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<HeightField> {
     let zoom = choose_zoom(spec, sample_width.max(sample_height));
     let client = Client::builder()
@@ -64,6 +69,7 @@ fn fetch_height_field_at_size(
                 &client, cache_dir, &mut tiles, zoom, longitude, latitude,
             )?);
         }
+        on_progress((row + 1) as f32 / sample_height as f32)?;
     }
 
     HeightField::new(

@@ -1028,6 +1028,8 @@ function ReliefPreview({
     controlsRef.current = controls;
     canvas.dataset.cameraMoved = savedView ? "true" : "false";
     resetViewRef.current = false;
+    const initialPosition = camera.position.clone();
+    const initialTarget = controls.target.clone();
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1044,11 +1046,17 @@ function ReliefPreview({
       render();
     };
     const onViewChange = () => {
-      canvas.dataset.cameraMoved = "true";
-      viewRef.current = {
-        position: camera.position.toArray(),
-        target: controls.target.toArray(),
-      };
+      const positionDelta =
+        camera.position.distanceToSquared(initialPosition);
+      const targetDelta = controls.target.distanceToSquared(initialTarget);
+      const cameraMoved = positionDelta > 1e-12 || targetDelta > 1e-12;
+      if (cameraMoved) {
+        canvas.dataset.cameraMoved = "true";
+        viewRef.current = {
+          position: camera.position.toArray(),
+          target: controls.target.toArray(),
+        };
+      }
       render();
     };
     controls.addEventListener("change", onViewChange);
@@ -1057,7 +1065,7 @@ function ReliefPreview({
     resize();
 
     return () => {
-      if (!resetViewRef.current) {
+      if (!resetViewRef.current && canvas.dataset.cameraMoved === "true") {
         viewRef.current = {
           position: camera.position.toArray(),
           target: controls.target.toArray(),
@@ -1132,6 +1140,7 @@ function ReliefPreview({
           type="button"
           onClick={() => {
             resetViewRef.current = true;
+            viewRef.current = null;
             setResetViewKey((current) => current + 1);
           }}
         >

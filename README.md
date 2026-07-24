@@ -24,13 +24,13 @@ with `chmod +x` before opening it.
 
 ## Screenshots
 
-![TopoSaic workspace showing the Mount Rainier map and interactive 3D terrain puzzle preview](docs/images/toposaic-studio.png)
+![TopoSaic light workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
 
-*Choose a place beside a live, rotatable elevation preview.*
+*Choose a place beside a live, rotatable preview, then shape the model below.*
 
-![TopoSaic surface controls for terrain colors and mapped waterways](docs/images/toposaic-surface-controls.png)
+![TopoSaic light workspace showing terrain colors, mapped water and road controls, and bridge structure choices](docs/images/toposaic-surface-controls.png)
 
-*Tune print colors and mapped surface layers without leaving the 3D workspace.*
+*Tune print colors, mapped layers, road detail, and bridge structure in place.*
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color

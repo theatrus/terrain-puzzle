@@ -17,6 +17,10 @@ concurrency:
 jobs:
   test:
     name: Test desktop and shared code
+    # Fork pull requests keep a visible skipped record but never receive a runner.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -43,6 +47,9 @@ jobs:
 
   bundle:
     name: Bundle ${{ matrix.label }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     needs: test
     strategy:
       fail-fast: false
@@ -202,7 +209,9 @@ jobs:
 
   bundle-macos-pr:
     name: Bundle macOS for pull request
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     needs: test
     runs-on: macos-latest
     steps:

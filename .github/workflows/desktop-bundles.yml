@@ -48,10 +48,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: macOS
-            os: macos-latest
-            bundles: app,dmg
-            arch: aarch64
           - label: Windows
             os: windows-latest
             bundles: msi,nsis
@@ -142,27 +138,6 @@ jobs:
             throw "The Windows executable needs a Visual C++ Redistributable runtime."
           }
 
-      - name: Stage macOS files
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          app="target/release/bundle/macos/TopoSaic.app"
-          dmgs=(target/release/bundle/dmg/*.dmg)
-          if [[ ! -d "$app" ]]; then
-            echo "::error::TopoSaic.app was not built."
-            exit 1
-          fi
-          if [[ "${#dmgs[@]}" -ne 1 || ! -f "${dmgs[0]}" ]]; then
-            echo "::error::Expected one DMG, found ${#dmgs[@]}."
-            exit 1
-          fi
-          mkdir -p release-artifacts
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" \
-            "release-artifacts/TopoSaic-${APP_VERSION}-macos-${{ matrix.arch }}.app.zip"
-          cp "${dmgs[0]}" \
-            "release-artifacts/TopoSaic-${APP_VERSION}-macos-${{ matrix.arch }}.dmg"
-
       - name: Stage Windows files
         if: runner.os == 'Windows'
         shell: pwsh
@@ -198,24 +173,6 @@ jobs:
           chmod +x \
             "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
 
-      - name: Upload macOS app archive
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v7
-        with:
-          name: TopoSaic-${{ env.APP_VERSION }}-macos-${{ matrix.arch }}.app.zip
-          path: release-artifacts/*.app.zip
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload macOS disk image
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v7
-        with:
-          name: TopoSaic-${{ env.APP_VERSION }}-macos-${{ matrix.arch }}.dmg
-          path: release-artifacts/*.dmg
-          if-no-files-found: error
-          compression-level: 0
-
       - name: Upload Windows MSI
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
@@ -243,10 +200,240 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  bundle-macos-pr:
+    name: Bundle macOS for pull request
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      - name: Read app version
+        shell: bash
+        run: |
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          printf 'APP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+
+      - name: Build ad-hoc macOS bundle
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: npm run tauri
+          args: --bundles app,dmg
+          uploadWorkflowArtifacts: false
+
+      - name: Verify and stage macOS files
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          app="target/release/bundle/macos/TopoSaic.app"
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          test -d "$app"
+          test "${#dmgs[@]}" -eq 1
+          codesign --verify --deep --strict --verbose=4 "$app"
+          hdiutil verify "${dmgs[0]}"
+          mkdir -p release-artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.app.zip"
+          cp "${dmgs[0]}" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.dmg"
+
+      - name: Upload macOS app archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-aarch64.app.zip
+          path: release-artifacts/*.app.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload macOS disk image
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-aarch64.dmg
+          path: release-artifacts/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+  bundle-macos:
+    name: Bundle signed and notarized macOS
+    if: >-
+      github.repository == 'theatrus/toposaic' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.actor == 'theatrus' &&
+      github.ref == 'refs/heads/main'))
+    needs: test
+    environment: signing
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      - name: Read app version
+        shell: bash
+        run: |
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          printf 'APP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+
+      - name: Check tag matches app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "v$APP_VERSION" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app version $APP_VERSION."
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_BUILD_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_BUILD_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_CERTIFICATE"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$KEYCHAIN_PASSWORD"
+
+          certificate_path="$RUNNER_TEMP/toposaic-certificate.p12"
+          keychain_path="$RUNNER_TEMP/toposaic-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$certificate_path"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 7200 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+
+          certificate_identity="$(
+            security find-identity -v -p codesigning "$keychain_path" \
+              | awk -F'"' '/Developer ID Application/ { print $2; exit }'
+          )"
+          test "$certificate_identity" = \
+            "Developer ID Application: StackFoundry LLC (HSRHLHH333)"
+          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$certificate_identity" \
+            >> "$GITHUB_ENV"
+
+      - name: Install App Store Connect key
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PRIVATE: ${{ secrets.APPLE_API_KEY_PRIVATE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_API_ISSUER"
+          test -n "$APPLE_API_KEY"
+          test -n "$APPLE_API_KEY_PRIVATE"
+
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_PRIVATE" | base64 -D > "$key_path"
+          chmod 600 "$key_path"
+          printf 'APPLE_API_KEY_PATH=%s\n' "$key_path" >> "$GITHUB_ENV"
+
+      - name: Build signed and notarized macOS bundle
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        with:
+          tauriScript: npm run tauri
+          args: --bundles app,dmg
+          uploadWorkflowArtifacts: false
+
+      - name: Verify and stage signed macOS files
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          app="target/release/bundle/macos/TopoSaic.app"
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          test -d "$app"
+          test "${#dmgs[@]}" -eq 1
+
+          codesign --verify --deep --strict --verbose=4 "$app"
+          codesign --verify --verbose=4 "${dmgs[0]}"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "${dmgs[0]}"
+          spctl --assess --type execute --verbose=4 "$app"
+          spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "${dmgs[0]}"
+          hdiutil verify "${dmgs[0]}"
+
+          mkdir -p release-artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.app.zip"
+          cp "${dmgs[0]}" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.dmg"
+
+      - name: Upload signed macOS app archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-aarch64.app.zip
+          path: release-artifacts/*.app.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload signed macOS disk image
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-aarch64.dmg
+          path: release-artifacts/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Remove signing material
+        if: always()
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        shell: bash
+        run: |
+          security delete-keychain \
+            "$RUNNER_TEMP/toposaic-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/toposaic-certificate.p12"
+          rm -f "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, bundle]
+    needs: [test, bundle, bundle-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

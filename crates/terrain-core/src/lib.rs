@@ -2326,7 +2326,7 @@ fn coordinate_label(value: f64, positive: char, negative: char) -> String {
 }
 
 pub fn generate_project(spec: &GenerationSpec, output_dir: &Path) -> Result<ProjectManifest> {
-    generate_project_inner(spec, None, None, output_dir)
+    generate_project_inner(spec, None, None, output_dir, &|| false)
 }
 
 pub fn generate_project_with_height_field(
@@ -2334,7 +2334,7 @@ pub fn generate_project_with_height_field(
     height_field: &HeightField,
     output_dir: &Path,
 ) -> Result<ProjectManifest> {
-    generate_project_inner(spec, Some(height_field), None, output_dir)
+    generate_project_inner(spec, Some(height_field), None, output_dir, &|| false)
 }
 
 pub fn generate_project_with_fields(
@@ -2343,7 +2343,25 @@ pub fn generate_project_with_fields(
     surface_field: Option<&SurfaceField>,
     output_dir: &Path,
 ) -> Result<ProjectManifest> {
-    generate_project_inner(spec, Some(height_field), surface_field, output_dir)
+    generate_project_inner(spec, Some(height_field), surface_field, output_dir, &|| {
+        false
+    })
+}
+
+pub fn generate_project_with_fields_cancellable(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    surface_field: Option<&SurfaceField>,
+    output_dir: &Path,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ProjectManifest> {
+    generate_project_inner(
+        spec,
+        Some(height_field),
+        surface_field,
+        output_dir,
+        is_cancelled,
+    )
 }
 
 pub fn build_height_preview(
@@ -2365,8 +2383,10 @@ fn generate_project_inner(
     height_field: Option<&HeightField>,
     surface_field: Option<&SurfaceField>,
     output_dir: &Path,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<ProjectManifest> {
     spec.validate()?;
+    ensure_generation_active(is_cancelled)?;
     if spec.color_output.enabled && surface_field.is_none() {
         bail!("color output requires ESA WorldCover surface data");
     }
@@ -2394,10 +2414,12 @@ fn generate_project_inner(
         .min(rayon::current_num_threads())
         .clamp(1, MAX_PARALLEL_PIECES);
     for batch_start in (0..object_count).step_by(piece_batch_size) {
+        ensure_generation_active(is_cancelled)?;
         let batch_end = (batch_start + piece_batch_size).min(object_count);
         let pieces = (batch_start..batch_end)
             .into_par_iter()
             .map(|index| -> Result<(Mesh, Artifact)> {
+                ensure_generation_active(is_cancelled)?;
                 let row = if spec.solid_model {
                     0
                 } else {
@@ -2417,6 +2439,7 @@ fn generate_project_inner(
                     column,
                 )
                 .with_context(|| format!("build piece {}, {}", row + 1, column + 1))?;
+                ensure_generation_active(is_cancelled)?;
                 let name = if spec.solid_model {
                     "terrain-solid.stl".into()
                 } else {
@@ -2429,15 +2452,18 @@ fn generate_project_inner(
             })
             .collect::<Vec<_>>();
         for piece in pieces {
+            ensure_generation_active(is_cancelled)?;
             let (mesh, artifact) = piece?;
             artifacts.push(artifact);
             project_writer.write_mesh(&mesh)?;
         }
     }
+    ensure_generation_active(is_cancelled)?;
     project_writer.finish()?;
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
     if spec.tray.enabled {
+        ensure_generation_active(is_cancelled)?;
         let tray_mesh = build_tray(spec, height_field)?;
         let tray_stl_path = output_dir.join("terrain-tray.stl");
         write_binary_stl(&tray_mesh, &tray_stl_path)?;
@@ -2459,6 +2485,7 @@ fn generate_project_inner(
         artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
     }
 
+    ensure_generation_active(is_cancelled)?;
     let preview_path = output_dir.join("preview.json");
     let preview_size = preview_sample_count(spec);
     let preview = build_preview(spec, height_field, surface_field, preview_size);
@@ -2476,6 +2503,7 @@ fn generate_project_inner(
         artifacts,
     };
     let manifest_path = output_dir.join("manifest.json");
+    ensure_generation_active(is_cancelled)?;
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
         .with_context(|| format!("write {}", manifest_path.display()))?;
 
@@ -2484,6 +2512,13 @@ fn generate_project_inner(
         .artifacts
         .push(file_artifact(&manifest_path, "application/json")?);
     Ok(complete)
+}
+
+fn ensure_generation_active(is_cancelled: &(dyn Fn() -> bool + Sync)) -> Result<()> {
+    if is_cancelled() {
+        bail!("generation canceled");
+    }
+    Ok(())
 }
 
 fn preview_sample_count(spec: &GenerationSpec) -> usize {
@@ -5365,6 +5400,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn canceled_generation_stops_before_writing_output() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-canceled-core-test-{}",
+            std::process::id()
+        ));
+        let result =
+            generate_project_inner(&GenerationSpec::default(), None, None, &output_dir, &|| {
+                true
+            });
+
+        assert_eq!(result.unwrap_err().to_string(), "generation canceled");
+        assert!(!output_dir.exists());
     }
 
     fn point_segment_distance(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {

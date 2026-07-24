@@ -74,7 +74,7 @@ type Artifact = {
 
 type Job = {
   id: string;
-  status: "queued" | "running" | "complete" | "failed";
+  status: "queued" | "running" | "complete" | "failed" | "canceled";
   progress: number;
   artifacts: Artifact[];
   error?: string | null;
@@ -1282,6 +1282,7 @@ export function TerrainStudio() {
     useState<PreviewData | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [canceling, setCanceling] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [savingArtifact, setSavingArtifact] = useState<string | null>(null);
   const [placeQuery, setPlaceQuery] = useState("");
@@ -1555,6 +1556,34 @@ export function TerrainStudio() {
     }
   };
 
+  const cancelGeneration = async () => {
+    setActiveSection("output");
+    setMessage(null);
+    if (!job || !["queued", "running"].includes(job.status)) return;
+
+    setCanceling(true);
+    try {
+      const response = await fetch(`${API_URL}/api/jobs/${job.id}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Generation could not be canceled");
+      }
+      setJob(payload as Job);
+      setGeneratedPreview(null);
+      setMessage("Generation canceled.");
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Generation could not be canceled.",
+      );
+    } finally {
+      setCanceling(false);
+    }
+  };
+
   const saveDesktopArtifact = async (artifact: Artifact) => {
     if (!job || !IS_TAURI) return;
     setSavingArtifact(artifact.name);
@@ -1583,6 +1612,7 @@ export function TerrainStudio() {
     if (!job) return null;
     if (job.status === "complete") return "Your print files are ready.";
     if (job.status === "failed") return job.error ?? "Generation failed.";
+    if (job.status === "canceled") return "Generation canceled.";
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.progress < 40) return "Sampling global elevation…";
     if (
@@ -1607,6 +1637,9 @@ export function TerrainStudio() {
   }, [job]);
 
   const preview = generatedPreview ?? elevationPreview;
+  const generationActive =
+    job !== null && ["queued", "running"].includes(job.status);
+  const cancellationActive = generationActive || canceling;
   const previewState = generatedPreview
     ? "generated"
     : elevationPreview
@@ -1631,13 +1664,22 @@ export function TerrainStudio() {
             {job ? statusLabel : "Local engine · SQLite"}
           </div>
           <button
-            className="topbar-generate"
-            type="submit"
+            className={`topbar-generate${cancellationActive ? " cancel" : ""}`}
+            type={generationActive ? "button" : "submit"}
             form="terrain-controls"
-            disabled={submitting}
+            disabled={submitting || canceling}
+            onClick={
+              generationActive ? () => void cancelGeneration() : undefined
+            }
           >
-            {submitting ? "Starting…" : "Generate"}
-            <span aria-hidden="true">↗</span>
+            {submitting
+              ? "Starting…"
+              : canceling
+                ? "Canceling…"
+                : generationActive
+                  ? "Cancel"
+                  : "Generate"}
+            <span aria-hidden="true">{cancellationActive ? "×" : "↗"}</span>
           </button>
         </div>
       </header>
@@ -2470,7 +2512,7 @@ export function TerrainStudio() {
                 <span className="status-dot" />
                 <strong>{message ?? statusLabel}</strong>
               </div>
-              {job && job.status !== "failed" && (
+              {job && !["failed", "canceled"].includes(job.status) && (
                 <div className="progress-track">
                   <span style={{ width: `${job.progress}%` }} />
                 </div>

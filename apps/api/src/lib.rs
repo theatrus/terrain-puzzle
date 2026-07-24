@@ -1,8 +1,12 @@
 use std::{
+    collections::HashMap,
     env,
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -19,7 +23,9 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use terrain_core::{Artifact, GenerationSpec, artifact_path};
+use terrain_core::{
+    Artifact, GenerationSpec, artifact_path, generate_project_with_fields_cancellable,
+};
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex, time::sleep};
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -40,6 +46,7 @@ struct AppState {
     geocoder: Client,
     geocoder_base_url: Arc<String>,
     last_geocode_request: Arc<AsyncMutex<Instant>>,
+    active_jobs: Arc<StdMutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,6 +134,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
                 .unwrap_or_else(|_| "https://nominatim.openstreetmap.org".into()),
         ),
         last_geocode_request: Arc::new(AsyncMutex::new(Instant::now() - Duration::from_secs(1))),
+        active_jobs: Arc::new(StdMutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -134,7 +142,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .route("/api/places", get(search_places))
         .route("/api/preview", axum::routing::post(create_preview))
         .route("/api/jobs", get(list_jobs).post(create_job))
-        .route("/api/jobs/{id}", get(get_job))
+        .route("/api/jobs/{id}", get(get_job).delete(cancel_job))
         .route("/api/jobs/{id}/downloads/{name}", get(download))
         .layer(
             CorsLayer::new()
@@ -324,15 +332,38 @@ async fn create_job(
     };
     insert_job(&state, &job).map_err(internal_error)?;
 
+    let cancellation = Arc::new(AtomicBool::new(false));
+    state
+        .active_jobs
+        .lock()
+        .map_err(|_| internal_error("active job lock failed"))?
+        .insert(id.clone(), cancellation.clone());
     let worker_state = state.clone();
     tokio::task::spawn_blocking(move || {
-        let failure = match catch_unwind(AssertUnwindSafe(|| run_job(&worker_state, &id, &spec))) {
-            Ok(Ok(())) => return,
-            Ok(Err(error)) => error.to_string(),
-            Err(payload) => panic_message(payload),
-        };
-        error!(job_id = %id, error = %failure, "generation failed");
-        let _ = update_job(&worker_state, &id, "failed", 100, &[], Some(&failure));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            run_job(&worker_state, &id, &spec, &cancellation)
+        }));
+        if cancellation.load(Ordering::Acquire) {
+            let output_dir = worker_state.jobs_dir.join(&id);
+            if let Err(cleanup_error) = std::fs::remove_dir_all(&output_dir)
+                && cleanup_error.kind() != std::io::ErrorKind::NotFound
+            {
+                error!(job_id = %id, error = %cleanup_error, "cancel cleanup failed");
+            }
+        } else {
+            let failure = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(payload) => Some(panic_message(payload)),
+            };
+            if let Some(failure) = failure {
+                error!(job_id = %id, error = %failure, "generation failed");
+                let _ = update_job(&worker_state, &id, "failed", 100, &[], Some(&failure));
+            }
+        }
+        if let Ok(mut active_jobs) = worker_state.active_jobs.lock() {
+            active_jobs.remove(&id);
+        }
     });
 
     Ok((StatusCode::ACCEPTED, Json(job)))
@@ -369,6 +400,36 @@ async fn get_job(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Job>, (StatusCode, Json<ApiError>)> {
+    find_job(&state, &id)
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))
+}
+
+async fn cancel_job(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Job>, (StatusCode, Json<ApiError>)> {
+    let id =
+        canonical_job_id(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
+    let job = find_job(&state, &id)
+        .map_err(internal_error)?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
+    if !matches!(job.status.as_str(), "queued" | "running") {
+        return Err(api_error(StatusCode::CONFLICT, "job is no longer running"));
+    }
+
+    if !mark_job_canceled(&state, &id).map_err(internal_error)? {
+        return Err(api_error(StatusCode::CONFLICT, "job is no longer running"));
+    }
+    if let Some(cancellation) = state
+        .active_jobs
+        .lock()
+        .map_err(|_| internal_error("active job lock failed"))?
+        .get(&id)
+    {
+        cancellation.store(true, Ordering::Release);
+    }
     find_job(&state, &id)
         .map_err(internal_error)?
         .map(Json)
@@ -431,11 +492,18 @@ fn canonical_job_id(id: &str) -> Option<String> {
         .map(|value| value.hyphenated().to_string())
 }
 
-fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
+fn run_job(
+    state: &AppState,
+    id: &str,
+    spec: &GenerationSpec,
+    cancellation: &AtomicBool,
+) -> Result<()> {
     let job_started = Instant::now();
+    ensure_job_active(cancellation)?;
     update_job(state, id, "running", 10, &[], None)?;
     let phase_started = Instant::now();
     let height_field = elevation::fetch_height_field(spec, &state.map_cache_dir.join("elevation"))?;
+    ensure_job_active(cancellation)?;
     info!(
         job_id = %id,
         phase = "elevation",
@@ -446,6 +514,7 @@ fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
     let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
         let phase_started = Instant::now();
         let field = surface::fetch_surface_field(spec, &height_field, &state.map_cache_dir)?;
+        ensure_job_active(cancellation)?;
         info!(
             job_id = %id,
             phase = "surface",
@@ -459,12 +528,14 @@ fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
     };
     let output_dir = state.jobs_dir.join(id);
     let phase_started = Instant::now();
-    let manifest = terrain_core::generate_project_with_fields(
+    let manifest = generate_project_with_fields_cancellable(
         spec,
         &height_field,
         surface_field.as_ref(),
         &output_dir,
+        &|| cancellation.load(Ordering::Acquire),
     )?;
+    ensure_job_active(cancellation)?;
     info!(
         job_id = %id,
         phase = "mesh",
@@ -477,6 +548,13 @@ fn run_job(state: &AppState, id: &str, spec: &GenerationSpec) -> Result<()> {
         elapsed_ms = job_started.elapsed().as_millis() as u64,
         "generation complete"
     );
+    Ok(())
+}
+
+fn ensure_job_active(cancellation: &AtomicBool) -> Result<()> {
+    if cancellation.load(Ordering::Acquire) {
+        anyhow::bail!("generation canceled");
+    }
     Ok(())
 }
 
@@ -517,7 +595,8 @@ fn update_job(
         .map_err(|_| anyhow::anyhow!("database lock failed"))?;
     connection.execute(
         "UPDATE jobs SET status = ?2, progress = ?3, updated_at = ?4,
-         artifacts_json = ?5, error = ?6 WHERE id = ?1",
+         artifacts_json = ?5, error = ?6
+         WHERE id = ?1 AND status != 'canceled'",
         params![
             id,
             status,
@@ -528,6 +607,21 @@ fn update_job(
         ],
     )?;
     Ok(())
+}
+
+fn mark_job_canceled(state: &AppState, id: &str) -> Result<bool> {
+    let connection = state
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
+    let updated = connection.execute(
+        "UPDATE jobs
+         SET status = 'canceled', updated_at = ?2, artifacts_json = '[]',
+             error = NULL
+         WHERE id = ?1 AND status IN ('queued', 'running')",
+        params![id, Utc::now().to_rfc3339()],
+    )?;
+    Ok(updated == 1)
 }
 
 fn find_job(state: &AppState, id: &str) -> Result<Option<Job>> {
@@ -581,6 +675,22 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<ApiError>)
 mod tests {
     use super::*;
 
+    fn test_state() -> AppState {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate(&connection).unwrap();
+        let data_dir =
+            std::env::temp_dir().join(format!("toposaic-api-test-{}", std::process::id()));
+        AppState {
+            db: Arc::new(StdMutex::new(connection)),
+            jobs_dir: Arc::new(data_dir.join("jobs")),
+            map_cache_dir: Arc::new(data_dir.join("cache")),
+            geocoder: Client::new(),
+            geocoder_base_url: Arc::new("https://example.invalid".into()),
+            last_geocode_request: Arc::new(AsyncMutex::new(Instant::now())),
+            active_jobs: Arc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
     #[test]
     fn converts_nominatim_coordinates() {
         let place = PlaceResult::try_from(NominatimPlace {
@@ -630,5 +740,31 @@ mod tests {
         assert_eq!(canonical_job_id(".."), None);
         assert_eq!(canonical_job_id("../data"), None);
         assert_eq!(canonical_job_id("not-a-job"), None);
+    }
+
+    #[test]
+    fn canceled_jobs_cannot_return_to_running_or_complete() {
+        let state = test_state();
+        let now = Utc::now();
+        let job = Job {
+            id: "395481ef-0e39-4d94-9d94-2c39fea86000".into(),
+            status: "running".into(),
+            progress: 40,
+            created_at: now,
+            updated_at: now,
+            spec: GenerationSpec::default(),
+            artifacts: Vec::new(),
+            error: None,
+        };
+        insert_job(&state, &job).unwrap();
+
+        assert!(mark_job_canceled(&state, &job.id).unwrap());
+        update_job(&state, &job.id, "complete", 100, &[], None).unwrap();
+
+        let canceled = find_job(&state, &job.id).unwrap().unwrap();
+        assert_eq!(canceled.status, "canceled");
+        assert_eq!(canceled.progress, 40);
+        assert!(canceled.artifacts.is_empty());
+        assert!(!mark_job_canceled(&state, &job.id).unwrap());
     }
 }

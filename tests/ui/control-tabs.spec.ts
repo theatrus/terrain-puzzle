@@ -261,6 +261,64 @@ test("rotates, zooms, and resets the interactive 3D preview", async ({
   await expect(preview).toHaveAttribute("data-camera-moved", "true");
 });
 
+test("turns Generate into Cancel while a job is active", async ({ page }) => {
+  const jobId = "8b4165dc-9b47-4fa2-9f75-2ea36b9dff45";
+  let cancelRequested = false;
+
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: jobId,
+          status: "queued",
+          progress: 0,
+          artifacts: [],
+          spec: request.postDataJSON(),
+        },
+      });
+      return;
+    }
+    if (
+      url.pathname === `/api/jobs/${jobId}` &&
+      request.method() === "DELETE"
+    ) {
+      cancelRequested = true;
+      await route.fulfill({
+        json: {
+          id: jobId,
+          status: "canceled",
+          progress: 0,
+          artifacts: [],
+          spec: {},
+        },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Generate/ }).click();
+
+  const cancel = page.getByRole("button", { name: /^Cancel$/ });
+  await expect(cancel).toBeVisible();
+  await expect(cancel).toHaveClass(/cancel/);
+  await cancel.click();
+
+  await expect(page.getByRole("button", { name: /^Generate/ })).toBeVisible();
+  await expect(page.getByText("Generation canceled.").first()).toBeVisible();
+  expect(cancelRequested).toBe(true);
+});
+
 test("keeps direct artifact downloads in the web app", async ({ page }) => {
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();

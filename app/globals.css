@@ -91,6 +91,16 @@ a {
   font-size: 16px;
 }
 
+.topbar-generate.cancel {
+  background: #8f493b;
+}
+
+.topbar-generate.cancel span {
+  color: white;
+  font-size: 20px;
+  line-height: 0.8;
+}
+
 .topbar-generate:disabled {
   cursor: wait;
   opacity: 0.65;
@@ -582,6 +592,10 @@ a {
 
 .tab-status.failed {
   background: #c45f4d;
+}
+
+.tab-status.canceled {
+  background: #858d89;
 }
 
 .control-section {
@@ -1276,6 +1290,10 @@ fieldset.control-section .road-options {
 .job-card.failed .status-dot,
 .job-card.notice .status-dot {
   background: #c45f4d;
+}
+
+.job-card.canceled .status-dot {
+  background: #858d89;
 }
 
 .progress-track {

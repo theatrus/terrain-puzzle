@@ -749,6 +749,46 @@ impl SurfaceField {
         self.sample_with_overlays(u, v, false, false)
     }
 
+    fn interpolated_base_class(&self, u: f32, v: f32) -> SurfaceClass {
+        let x = u.clamp(0.0, 1.0) * (self.width - 1) as f32;
+        let y = v.clamp(0.0, 1.0) * (self.height - 1) as f32;
+        let x0 = x.floor() as usize;
+        let y0 = y.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let tx = x - x0 as f32;
+        let ty = y - y0 as f32;
+        let corners = [
+            (
+                self.base_classes[y0 * self.width + x0],
+                (1.0 - tx) * (1.0 - ty),
+            ),
+            (self.base_classes[y0 * self.width + x1], tx * (1.0 - ty)),
+            (self.base_classes[y1 * self.width + x1], tx * ty),
+            (self.base_classes[y1 * self.width + x0], (1.0 - tx) * ty),
+        ];
+        [
+            SurfaceClass::Rock,
+            SurfaceClass::Forest,
+            SurfaceClass::Snow,
+            SurfaceClass::Water,
+            SurfaceClass::Road,
+            SurfaceClass::Building,
+        ]
+        .into_iter()
+        .map(|class| {
+            let weight = corners
+                .iter()
+                .filter(|(corner_class, _)| *corner_class == class)
+                .map(|(_, weight)| weight)
+                .sum::<f32>();
+            (class, weight)
+        })
+        .max_by(|first, second| first.1.total_cmp(&second.1))
+        .map(|(class, _)| class)
+        .unwrap_or(SurfaceClass::Rock)
+    }
+
     fn sample_with_overlays(
         &self,
         u: f32,
@@ -812,10 +852,8 @@ impl SurfaceField {
                 building_height_m,
             };
         }
-        let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
-        let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
         SurfaceSample {
-            class: self.base_classes[y * self.width + x],
+            class: self.interpolated_base_class(u, v),
             building_height_m,
         }
     }
@@ -1672,6 +1710,144 @@ fn smooth_contour_path(path: ContourPath) -> ContourPath {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn add_forest_boundary_points(
+    points: &mut Vec<Point2<f64>>,
+    point_keys: &mut HashMap<(i64, i64), usize>,
+    field: &SurfaceField,
+    outline: &[[f32; 2]],
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+    spacing: f32,
+) -> usize {
+    let bounds = surface_area_bounds(outline);
+    let minimum_u = ((bounds[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+    let maximum_u = ((bounds[2] + origin_x) / assembled_width).clamp(0.0, 1.0);
+    let minimum_v = ((bounds[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+    let maximum_v = ((bounds[3] + origin_y) / assembled_height).clamp(0.0, 1.0);
+    let first_column = (minimum_u * (field.width - 1) as f32).floor().max(0.0) as usize;
+    let last_column = (maximum_u * (field.width - 1) as f32)
+        .ceil()
+        .min((field.width - 1) as f32) as usize;
+    let first_row = (minimum_v * (field.height - 1) as f32).floor().max(0.0) as usize;
+    let last_row = (maximum_v * (field.height - 1) as f32)
+        .ceil()
+        .min((field.height - 1) as f32) as usize;
+    let mut segments = Vec::new();
+
+    for row in first_row..last_row {
+        for column in first_column..last_column {
+            let uv = [
+                [
+                    column as f32 / (field.width - 1) as f32,
+                    row as f32 / (field.height - 1) as f32,
+                ],
+                [
+                    (column + 1) as f32 / (field.width - 1) as f32,
+                    row as f32 / (field.height - 1) as f32,
+                ],
+                [
+                    (column + 1) as f32 / (field.width - 1) as f32,
+                    (row + 1) as f32 / (field.height - 1) as f32,
+                ],
+                [
+                    column as f32 / (field.width - 1) as f32,
+                    (row + 1) as f32 / (field.height - 1) as f32,
+                ],
+            ];
+            let cell_points = uv.map(|point| {
+                [
+                    point[0] * assembled_width - origin_x,
+                    point[1] * assembled_height - origin_y,
+                ]
+            });
+            let cell_values = [
+                field.base_classes[row * field.width + column],
+                field.base_classes[row * field.width + column + 1],
+                field.base_classes[(row + 1) * field.width + column + 1],
+                field.base_classes[(row + 1) * field.width + column],
+            ]
+            .map(|class| f32::from(class == SurfaceClass::Forest));
+            if cell_values.iter().all(|value| *value == cell_values[0]) {
+                continue;
+            }
+            add_triangle_contour_segment(
+                [cell_points[0], cell_points[1], cell_points[2]],
+                [cell_values[0], cell_values[1], cell_values[2]],
+                0.5,
+                &mut segments,
+            );
+            add_triangle_contour_segment(
+                [cell_points[0], cell_points[2], cell_points[3]],
+                [cell_values[0], cell_values[2], cell_values[3]],
+                0.5,
+                &mut segments,
+            );
+        }
+    }
+
+    let offset = (spacing * 0.28).clamp(0.04, 0.35);
+    let before = points.len();
+    for path in stitch_contour_segments(segments)
+        .into_iter()
+        .filter(|path| path.points.len() > 2)
+        .map(smooth_contour_path)
+    {
+        for index in 0..path.points.len() {
+            let point = path.points[index];
+            let previous = if index > 0 {
+                path.points[index - 1]
+            } else if path.closed {
+                *path.points.last().unwrap()
+            } else {
+                point
+            };
+            let next = if index + 1 < path.points.len() {
+                path.points[index + 1]
+            } else if path.closed {
+                path.points[0]
+            } else {
+                point
+            };
+            let normal = unit_vector([previous[1] - next[1], next[0] - previous[0]]);
+            for candidate in [
+                point,
+                [point[0] + normal[0] * offset, point[1] + normal[1] * offset],
+                [point[0] - normal[0] * offset, point[1] - normal[1] * offset],
+            ] {
+                if point_in_polygon(candidate, outline) {
+                    push_unique_triangulation_point(points, point_keys, candidate);
+                }
+            }
+        }
+    }
+    points.len() - before
+}
+
+fn triangulation_point_key(point: [f32; 2]) -> (i64, i64) {
+    (
+        (point[0] * 100_000.0).round() as i64,
+        (point[1] * 100_000.0).round() as i64,
+    )
+}
+
+fn push_unique_triangulation_point(
+    points: &mut Vec<Point2<f64>>,
+    point_keys: &mut HashMap<(i64, i64), usize>,
+    point: [f32; 2],
+) -> usize {
+    let key = triangulation_point_key(point);
+    if let Some(index) = point_keys.get(&key) {
+        return *index;
+    }
+    let index = points.len();
+    points.push(Point2::new(f64::from(point[0]), f64::from(point[1])));
+    point_keys.insert(key, index);
+    index
+}
+
 fn add_contour_ribbon(output: &mut MeshBuilder, path: &ContourPath, bottom_z: f32, top_z: f32) {
     if path.points.len() < 2 {
         return;
@@ -2314,6 +2490,11 @@ fn build_piece(
         .iter()
         .map(|point| Point2::new(point[0] as f64, point[1] as f64))
         .collect::<Vec<_>>();
+    let mut point_keys = outline
+        .iter()
+        .enumerate()
+        .map(|(index, point)| (triangulation_point_key(*point), index))
+        .collect::<HashMap<_, _>>();
     let constraints = (0..outline.len())
         .map(|index| [index, (index + 1) % outline.len()])
         .collect::<Vec<_>>();
@@ -2334,6 +2515,21 @@ fn build_piece(
         .iter()
         .map(|point| point[1])
         .fold(f32::NEG_INFINITY, f32::max);
+    if spec.color_output.enabled
+        && let Some(field) = surface_field
+    {
+        add_forest_boundary_points(
+            &mut points,
+            &mut point_keys,
+            field,
+            &outline,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+            spacing,
+        );
+    }
     let grid_columns = ((maximum_x - minimum_x) / spacing).ceil() as usize;
     let grid_rows = ((maximum_y - minimum_y) / spacing).ceil() as usize;
     for grid_y in 0..grid_rows {
@@ -2341,7 +2537,7 @@ fn build_piece(
         for grid_x in 0..grid_columns {
             let x = minimum_x + (grid_x as f32 + 0.5) * spacing;
             if point_in_polygon([x, y], &outline) {
-                points.push(Point2::new(x as f64, y as f64));
+                push_unique_triangulation_point(&mut points, &mut point_keys, [x, y]);
             }
         }
     }
@@ -4321,6 +4517,73 @@ mod tests {
         let mut field = SurfaceField::new(5, 5, classes, "test").unwrap();
         field.filter_small_patches(10.0, 4.0);
         assert_eq!(field.classes[12], SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn base_surface_classes_use_interpolated_boundaries() {
+        let field = SurfaceField::new(
+            2,
+            2,
+            vec![
+                SurfaceClass::Forest,
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Forest,
+            ],
+            "test",
+        )
+        .unwrap();
+
+        assert_eq!(field.interpolated_base_class(0.75, 0.1), SurfaceClass::Rock);
+        assert_eq!(
+            field.interpolated_base_class(0.75, 0.9),
+            SurfaceClass::Forest
+        );
+    }
+
+    #[test]
+    fn forest_edges_add_targeted_smooth_mesh_points() {
+        let classes = (0..7)
+            .flat_map(|row| {
+                (0..7).map(move |column| {
+                    if column + row / 2 < 4 {
+                        SurfaceClass::Forest
+                    } else {
+                        SurfaceClass::Rock
+                    }
+                })
+            })
+            .collect();
+        let field = SurfaceField::new(7, 7, classes, "test").unwrap();
+        let outline = vec![[0.0, 0.0], [60.0, 0.0], [60.0, 60.0], [0.0, 60.0]];
+        let mut points = outline
+            .iter()
+            .map(|point| Point2::new(f64::from(point[0]), f64::from(point[1])))
+            .collect::<Vec<_>>();
+        let mut point_keys = outline
+            .iter()
+            .enumerate()
+            .map(|(index, point)| (triangulation_point_key(*point), index))
+            .collect::<HashMap<_, _>>();
+
+        let added = add_forest_boundary_points(
+            &mut points,
+            &mut point_keys,
+            &field,
+            &outline,
+            0.0,
+            0.0,
+            60.0,
+            60.0,
+            4.0,
+        );
+
+        assert!(added > 24, "expected dense boundary points, got {added}");
+        assert!(points.iter().skip(4).any(|point| {
+            let on_source_grid = (point.x / 10.0 - (point.x / 10.0).round()).abs() < 0.000_01
+                && (point.y / 10.0 - (point.y / 10.0).round()).abs() < 0.000_01;
+            !on_source_grid
+        }));
     }
 
     #[test]

@@ -375,6 +375,24 @@ jobs:
           args: --bundles app,dmg
           uploadWorkflowArtifacts: false
 
+      - name: Notarize and staple disk image
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          xcrun notarytool submit "${dmgs[0]}" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait \
+            --timeout 30m
+          xcrun stapler staple "${dmgs[0]}"
+
       - name: Verify and stage signed macOS files
         shell: bash
         run: |

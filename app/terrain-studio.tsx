@@ -26,6 +26,11 @@ type GenerationSpec = {
   relief_mm: number;
   elevation_datum_m: number | null;
   elevation_m_per_mm: number | null;
+  adjacent_columns: number;
+  adjacent_rows: number;
+  adjacent_interlocks: boolean;
+  adjacent_tile_column: number;
+  adjacent_tile_row: number;
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;
@@ -47,6 +52,8 @@ type GenerationSpec = {
     floor_mm: number;
     rim_height_mm: number;
     contour_count: number;
+    segment_columns: number;
+    segment_rows: number;
   };
   color_output: {
     enabled: boolean;
@@ -153,6 +160,11 @@ const initialSpec: GenerationSpec = {
   relief_mm: 14,
   elevation_datum_m: null,
   elevation_m_per_mm: null,
+  adjacent_columns: 1,
+  adjacent_rows: 1,
+  adjacent_interlocks: false,
+  adjacent_tile_column: 0,
+  adjacent_tile_row: 0,
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
@@ -174,6 +186,8 @@ const initialSpec: GenerationSpec = {
     floor_mm: 1.6,
     rim_height_mm: 3.2,
     contour_count: 18,
+    segment_columns: 1,
+    segment_rows: 1,
   },
   color_output: {
     enabled: true,
@@ -2092,41 +2106,81 @@ export function TerrainStudio() {
               aria-label="Adjacent tiles"
             >
               <div className="adjacent-heading">
-                <span>
-                  <strong>Adjacent tiles</strong>
-                  <small>
-                    Move by one full ground span and keep the same height frame.
-                  </small>
-                </span>
+                <strong>Adjacent tiles</strong>
                 <button
                   type="button"
                   onClick={heightFrameLocked ? unlockHeightFrame : lockHeightFrame}
                 >
-                  {heightFrameLocked ? "Use per-tile height" : "Lock current height"}
+                  {heightFrameLocked ? "Unlock height" : "Lock height"}
                 </button>
               </div>
-              <div className="adjacent-actions">
-                {(["north", "west", "east", "south"] as const).map(
-                  (direction) => (
-                    <button
-                      type="button"
-                      key={direction}
-                      onClick={() => moveToAdjacentTile(direction)}
+              <div className="adjacent-compact-row">
+                <div className="adjacent-actions" aria-label="Move one tile">
+                  {(["north", "west", "east", "south"] as const).map(
+                    (direction) => (
+                      <button
+                        type="button"
+                        key={direction}
+                        aria-label={`Move ${direction} one tile`}
+                        title={`Move ${direction} one tile`}
+                        onClick={() => moveToAdjacentTile(direction)}
+                      >
+                        <span aria-hidden="true">
+                          {direction === "north"
+                            ? "↑"
+                            : direction === "south"
+                              ? "↓"
+                              : direction === "east"
+                                ? "→"
+                                : "←"}
+                        </span>
+                      </button>
+                    ),
+                  )}
+                </div>
+                <div className="adjacent-grid" aria-label="Auto-adjacent grid">
+                  <span>Auto grid</span>
+                  <label>
+                    Across
+                    <select
+                      value={spec.adjacent_columns}
+                      onChange={(event) =>
+                        update("adjacent_columns", Number(event.target.value))
+                      }
                     >
-                      <span aria-hidden="true">
-                        {direction === "north"
-                          ? "↑"
-                          : direction === "south"
-                            ? "↓"
-                            : direction === "east"
-                              ? "→"
-                              : "←"}
-                      </span>
-                      {direction}
-                    </button>
-                  ),
-                )}
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span aria-hidden="true">×</span>
+                  <label>
+                    Down
+                    <select
+                      value={spec.adjacent_rows}
+                      onChange={(event) =>
+                        update("adjacent_rows", Number(event.target.value))
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
+              {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
+                <label className="adjacent-interlock-toggle">
+                  <input
+                    type="checkbox"
+                    checked={spec.adjacent_interlocks}
+                    onChange={(event) =>
+                      update("adjacent_interlocks", event.target.checked)
+                    }
+                  />
+                  Add matching tabs and sockets only on shared tile edges
+                </label>
+              )}
               <p
                 className={`height-frame-status${
                   heightFrameLocked && !heightFrameCompatible ? " warning" : ""
@@ -2141,7 +2195,9 @@ export function TerrainStudio() {
                     ? `Shared datum ${spec.elevation_datum_m?.toFixed(
                         1,
                       )} m · ${spec.elevation_m_per_mm?.toFixed(1)} m/mm`
-                    : "Auto height fits each tile on its own; adjacent exports may form a step."}
+                    : spec.adjacent_columns > 1 || spec.adjacent_rows > 1
+                      ? `${spec.adjacent_columns * spec.adjacent_rows} terrain 3MF files; current tile is the north-west corner. The grid shares one height frame.`
+                      : "Auto height fits one tile; manual neighbors may form a step."}
               </p>
               {adjacentMessage && <p className="adjacent-message">{adjacentMessage}</p>}
             </div>
@@ -2740,10 +2796,51 @@ export function TerrainStudio() {
                   step={1}
                   onChange={(value) => updateTray("contour_count", value)}
                 />
+                <div
+                  className="tray-segments"
+                  role="group"
+                  aria-label="Interlocking tray segments"
+                >
+                  <div>
+                    <strong>Interlocking tray segments</strong>
+                    <small>Split a large tray into print-bed-sized parts.</small>
+                  </div>
+                  <label>
+                    Across
+                    <select
+                      value={spec.tray.segment_columns}
+                      onChange={(event) =>
+                        updateTray(
+                          "segment_columns",
+                          Number(event.target.value),
+                        )
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span aria-hidden="true">×</span>
+                  <label>
+                    Down
+                    <select
+                      value={spec.tray.segment_rows}
+                      onChange={(event) =>
+                        updateTray("segment_rows", Number(event.target.value))
+                      }
+                    >
+                      {[1, 2, 3, 4].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <p className="color-note">
                   The color 3MF prints contour lines on the flat tray floor and
                   the place name, latitude, and longitude as raised shapes on
-                  the top front lip. The job also includes a plain STL.
+                  the top front lip. Split trays use matching jigsaw seams. The
+                  job also includes a plain STL.
                 </p>
               </>
             )}

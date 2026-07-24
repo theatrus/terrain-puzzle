@@ -815,7 +815,7 @@ fieldset.control-section .road-options {
 .adjacent-tiles {
   border: 1px solid var(--line);
   margin-bottom: 10px;
-  padding: 10px;
+  padding: 8px;
 }
 
 .adjacent-heading {
@@ -825,20 +825,10 @@ fieldset.control-section .road-options {
   justify-content: space-between;
 }
 
-.adjacent-heading strong,
-.adjacent-heading small {
-  display: block;
-}
-
 .adjacent-heading strong {
-  font-size: 11px;
-}
-
-.adjacent-heading small {
-  color: var(--muted);
   font-size: 9px;
-  line-height: 1.4;
-  margin-top: 3px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .adjacent-heading button,
@@ -852,9 +842,9 @@ fieldset.control-section .road-options {
 
 .adjacent-heading button {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
-  padding: 7px 9px;
+  padding: 5px 7px;
   text-transform: uppercase;
 }
 
@@ -865,25 +855,79 @@ fieldset.control-section .road-options {
   color: white;
 }
 
+.adjacent-compact-row {
+  align-items: end;
+  display: flex;
+  gap: 8px;
+  margin-top: 7px;
+}
+
 .adjacent-actions {
   display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-top: 9px;
+  flex: 0 0 auto;
+  gap: 3px;
+  grid-template-columns: repeat(4, 28px);
 }
 
 .adjacent-actions button {
   align-items: center;
   display: flex;
-  font-size: 9px;
-  gap: 5px;
+  height: 28px;
   justify-content: center;
-  padding: 7px 5px;
-  text-transform: capitalize;
+  padding: 0;
 }
 
 .adjacent-actions button span {
   font-size: 13px;
+}
+
+.adjacent-grid {
+  align-items: end;
+  display: flex;
+  gap: 5px;
+  margin-left: auto;
+}
+
+.adjacent-grid > span:first-child {
+  align-self: center;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  margin-right: 2px;
+  text-transform: uppercase;
+}
+
+.adjacent-grid label,
+.tray-segments label {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.adjacent-grid select,
+.tray-segments select {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  display: block;
+  font: inherit;
+  font-size: 9px;
+  margin-top: 2px;
+  padding: 4px 18px 4px 5px;
+}
+
+.adjacent-interlock-toggle {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 8px;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.adjacent-interlock-toggle input {
+  accent-color: var(--moss);
 }
 
 .height-frame-status,
@@ -891,7 +935,7 @@ fieldset.control-section .road-options {
   color: var(--muted);
   font-size: 9px;
   line-height: 1.4;
-  margin: 8px 0 0;
+  margin: 6px 0 0;
 }
 
 .height-frame-status.warning {
@@ -901,6 +945,34 @@ fieldset.control-section .road-options {
 
 .adjacent-message {
   color: var(--moss);
+}
+
+.tray-segments {
+  align-items: end;
+  border: 1px solid var(--line);
+  display: flex;
+  gap: 7px;
+  grid-column: 1 / -1;
+  padding: 9px;
+}
+
+.tray-segments > div {
+  margin-right: auto;
+}
+
+.tray-segments strong,
+.tray-segments small {
+  display: block;
+}
+
+.tray-segments strong {
+  font-size: 10px;
+}
+
+.tray-segments small {
+  color: var(--muted);
+  font-size: 8px;
+  margin-top: 3px;
 }
 
 .place-label-field {
@@ -1706,8 +1778,18 @@ fieldset.control-section .road-options {
     flex-direction: column;
   }
 
-  .adjacent-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .adjacent-compact-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .adjacent-grid {
+    margin-left: 0;
+  }
+
+  .tray-segments {
+    align-items: stretch;
+    flex-wrap: wrap;
   }
 
   .piece-grid {

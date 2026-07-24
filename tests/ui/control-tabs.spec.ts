@@ -121,9 +121,17 @@ test("switches between the reflowed control panels", async ({ page }) => {
   ).toBeVisible();
 
   await page.getByRole("tab", { name: "Tray" }).click();
-  await expect(
-    page.getByRole("group", { name: "Shallow terrain tray" }),
-  ).toBeVisible();
+  const trayControls = page.getByRole("group", {
+    name: "Shallow terrain tray",
+  });
+  await expect(trayControls).toBeVisible();
+  const traySegments = trayControls.getByRole("group", {
+    name: "Interlocking tray segments",
+  });
+  await traySegments.getByLabel("Across").selectOption("2");
+  await traySegments.getByLabel("Down").selectOption("2");
+  await expect(traySegments.getByLabel("Across")).toHaveValue("2");
+  await expect(traySegments.getByLabel("Down")).toHaveValue("2");
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
@@ -282,8 +290,18 @@ test("locks a height frame when moving to an adjacent tile", async ({
     ),
   ).toBe(true);
 
-  await page.getByRole("button", { name: "Use per-tile height" }).click();
-  await expect(page.getByText(/adjacent exports may form a step/)).toBeVisible();
+  await page.getByRole("button", { name: "Unlock height" }).click();
+  await expect(page.getByText(/manual neighbors may form a step/)).toBeVisible();
+
+  const autoGrid = page.getByLabel("Auto-adjacent grid");
+  await autoGrid.getByLabel("Across").selectOption("3");
+  await autoGrid.getByLabel("Down").selectOption("2");
+  await expect(page.getByText(/6 terrain 3MF files/)).toBeVisible();
+  const tileInterlocks = page.getByRole("checkbox", {
+    name: /matching tabs and sockets/,
+  });
+  await tileInterlocks.check();
+  await expect(tileInterlocks).toBeChecked();
 });
 
 test("rotates, zooms, and resets the interactive 3D preview", async ({

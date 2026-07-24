@@ -53,6 +53,16 @@ full tile. The first move locks the elevation datum and vertical scale, so the
 same real elevation prints at the same Z height on each tile. If a later tile
 drops below that datum, TopoSaic warns that the shared datum must move down and
 that earlier tiles must be regenerated.
+Auto grid mode starts at the current north-west tile and exports up to a 4×4
+set. Each terrain tile gets its own 3MF print pass, while the full set uses one
+elevation datum and vertical scale. Optional external tabs and sockets join
+shared tile edges. Tile bounds stay on a straight grid, and the outside border
+stays flat.
+
+Large trays can split into a matching 1×1 through 4×4 grid. TopoSaic exports
+each tray part as its own STL and color 3MF. Curved jigsaw seams give neighboring
+parts matching tabs and sockets while keeping the fitted well and contour
+inlays.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry. The service caches elevation, ESA WorldCover, and OpenStreetMap input

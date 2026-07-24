@@ -38,6 +38,8 @@ pub struct GenerationSpec {
     pub columns: u32,
     pub base_mm: f32,
     pub relief_mm: f32,
+    pub elevation_datum_m: Option<f32>,
+    pub elevation_m_per_mm: Option<f32>,
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
     pub overlay_samples_per_piece: u32,
@@ -61,6 +63,8 @@ impl Default for GenerationSpec {
             columns: 3,
             base_mm: 2.4,
             relief_mm: 14.0,
+            elevation_datum_m: None,
+            elevation_m_per_mm: None,
             clearance_mm: 0.14,
             samples_per_piece: 64,
             overlay_samples_per_piece: 112,
@@ -97,6 +101,18 @@ impl GenerationSpec {
         }
         if !(1.0..=80.0).contains(&self.relief_mm) {
             bail!("relief must be between 1 and 80 mm");
+        }
+        match (self.elevation_datum_m, self.elevation_m_per_mm) {
+            (Some(datum), Some(metres_per_mm)) => {
+                if !(-12_000.0..=12_000.0).contains(&datum) {
+                    bail!("elevation datum must be between -12000 and 12000 m");
+                }
+                if !(0.1..=2_000.0).contains(&metres_per_mm) {
+                    bail!("elevation scale must be between 0.1 and 2000 m/mm");
+                }
+            }
+            (None, None) => {}
+            _ => bail!("elevation datum and scale must be set together"),
         }
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
@@ -1084,7 +1100,7 @@ impl HeightField {
     }
 
     fn normalized_at(&self, u: f32, v: f32, minimum: f32, range: f32) -> f32 {
-        ((self.elevation_m_at(u, v) - minimum) / range).clamp(0.0, 1.0)
+        ((self.elevation_m_at(u, v) - minimum) / range).max(0.0)
     }
 
     pub fn elevation_m_at(&self, u: f32, v: f32) -> f32 {
@@ -1104,6 +1120,11 @@ impl HeightField {
     }
 
     fn range(&self) -> (f32, f32) {
+        let (minimum, maximum) = self.bounds();
+        (minimum, (maximum - minimum).max(1.0))
+    }
+
+    fn bounds(&self) -> (f32, f32) {
         let (minimum, maximum) = self
             .values_m
             .par_iter()
@@ -1121,8 +1142,33 @@ impl HeightField {
                     )
                 },
             );
-        (minimum, (maximum - minimum).max(1.0))
+        (minimum, maximum)
     }
+}
+
+fn height_range_for_spec(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+) -> Option<(f32, f32)> {
+    height_field.map(|field| {
+        spec.elevation_datum_m
+            .zip(spec.elevation_m_per_mm)
+            .map(|(datum, metres_per_mm)| (datum, metres_per_mm * spec.relief_mm))
+            .unwrap_or_else(|| field.range())
+    })
+}
+
+fn validate_height_frame(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<()> {
+    if let (Some(field), Some(datum)) = (height_field, spec.elevation_datum_m) {
+        let (minimum, _) = field.bounds();
+        if minimum + 0.01 < datum {
+            bail!(
+                "shared elevation datum {datum:.1} m is above this tile's minimum elevation \
+                 {minimum:.1} m; lower the datum and regenerate adjacent tiles"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1253,7 +1299,7 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     let label = tray_label(spec, outer_width, tray.rim_width_mm)?;
     let z_coordinates = [0.0, rim_z];
 
-    let height_range = height_field.map(HeightField::range);
+    let height_range = height_range_for_spec(spec, height_field);
     let contour_paths = trace_tray_contours(
         spec,
         height_field,
@@ -2418,7 +2464,8 @@ fn generate_project_inner(
     };
 
     let mut artifacts = Vec::new();
-    let height_range = height_field.map(HeightField::range);
+    validate_height_frame(spec, height_field)?;
+    let height_range = height_range_for_spec(spec, height_field);
     let project_path = output_dir.join(if spec.solid_model {
         "terrain-solid.3mf"
     } else {
@@ -2552,7 +2599,7 @@ fn build_piece(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
-    let height_range = height_field.map(HeightField::range);
+    let height_range = height_range_for_spec(spec, height_field);
     build_piece_with_height_range(spec, height_field, height_range, surface_field, row, column)
 }
 
@@ -3123,7 +3170,7 @@ fn build_road_polygon_shell(
         {
             let progress = surface_line_progress(line, u, v);
             let elevation = start + (end - start) * progress;
-            spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).clamp(0.0, 1.0)
+            spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).max(0.0)
         } else {
             spec.base_mm
                 + spec.relief_mm
@@ -3791,7 +3838,7 @@ fn build_preview(
     surface_field: Option<&SurfaceField>,
     size: usize,
 ) -> serde_json::Value {
-    let range = height_field.map(HeightField::range);
+    let range = height_range_for_spec(spec, height_field);
     let samples = (0..size * size)
         .into_par_iter()
         .map(|index| {
@@ -3839,6 +3886,16 @@ fn build_preview(
         "columns": spec.columns,
         "solid_model": spec.solid_model,
     });
+    if let Some(field) = height_field {
+        let (minimum, maximum) = field.bounds();
+        preview["minimum_elevation_m"] = serde_json::json!(minimum);
+        preview["maximum_elevation_m"] = serde_json::json!(maximum);
+        preview["height_frame_compatible"] = serde_json::json!(
+            spec.elevation_datum_m
+                .map(|datum| minimum + 0.01 >= datum)
+                .unwrap_or(true)
+        );
+    }
     if let (Some(field), Some(classes)) = (surface_field, surface_classes) {
         let coverage = field.coverage();
         preview["surface_classes"] = serde_json::json!(classes);
@@ -4088,6 +4145,78 @@ mod tests {
 
         spec.relief_mm = 80.1;
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn shared_height_frame_requires_a_datum_and_scale() {
+        let mut spec = GenerationSpec {
+            elevation_datum_m: Some(100.0),
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_err());
+
+        spec.elevation_m_per_mm = Some(25.0);
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
+        let spec = GenerationSpec {
+            elevation_datum_m: Some(50.0),
+            elevation_m_per_mm: Some(10.0),
+            ..GenerationSpec::default()
+        };
+        let first = HeightField::new(2, 2, vec![100.0, 200.0, 100.0, 200.0], "first").unwrap();
+        let second = HeightField::new(2, 2, vec![0.0, 200.0, 300.0, 400.0], "second").unwrap();
+
+        let first_z = terrain_z_at(
+            &spec,
+            Some(&first),
+            height_range_for_spec(&spec, Some(&first)),
+            1.0,
+            0.0,
+        );
+        let second_z = terrain_z_at(
+            &spec,
+            Some(&second),
+            height_range_for_spec(&spec, Some(&second)),
+            1.0,
+            0.0,
+        );
+
+        assert!((first_z - second_z).abs() < 0.0001);
+        assert!((first_z - (spec.base_mm + 15.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn shared_height_frame_reports_a_tile_below_its_datum() {
+        let spec = GenerationSpec {
+            elevation_datum_m: Some(100.0),
+            elevation_m_per_mm: Some(10.0),
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(2, 2, vec![90.0, 110.0, 120.0, 130.0], "test").unwrap();
+        let error = validate_height_frame(&spec, Some(&height))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("above this tile's minimum elevation 90.0 m"));
+        assert!(error.contains("regenerate adjacent tiles"));
+    }
+
+    #[test]
+    fn height_preview_reports_elevation_bounds_and_frame_fit() {
+        let spec = GenerationSpec {
+            elevation_datum_m: Some(100.0),
+            elevation_m_per_mm: Some(10.0),
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(2, 2, vec![90.0, 110.0, 120.0, 130.0], "test").unwrap();
+        let preview = build_height_preview(&spec, &height, 32).unwrap();
+
+        assert_eq!(preview["minimum_elevation_m"], 90.0);
+        assert_eq!(preview["maximum_elevation_m"], 130.0);
+        assert_eq!(preview["height_frame_compatible"], false);
     }
 
     #[test]

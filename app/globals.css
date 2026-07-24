@@ -663,7 +663,8 @@ fieldset.control-section .road-options {
 
 .model-controls .place-search,
 .model-controls .place-label-field,
-.model-controls .coordinate-row {
+.model-controls .coordinate-row,
+.model-controls .adjacent-tiles {
   grid-column: 1 / -1;
 }
 
@@ -809,6 +810,97 @@ fieldset.control-section .road-options {
 
 .coordinate-row input:focus {
   border-color: var(--moss);
+}
+
+.adjacent-tiles {
+  border: 1px solid var(--line);
+  margin-bottom: 10px;
+  padding: 10px;
+}
+
+.adjacent-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.adjacent-heading strong,
+.adjacent-heading small {
+  display: block;
+}
+
+.adjacent-heading strong {
+  font-size: 11px;
+}
+
+.adjacent-heading small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+  margin-top: 3px;
+}
+
+.adjacent-heading button,
+.adjacent-actions button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.adjacent-heading button {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 7px 9px;
+  text-transform: uppercase;
+}
+
+.adjacent-heading button:hover,
+.adjacent-actions button:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: white;
+}
+
+.adjacent-actions {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 9px;
+}
+
+.adjacent-actions button {
+  align-items: center;
+  display: flex;
+  font-size: 9px;
+  gap: 5px;
+  justify-content: center;
+  padding: 7px 5px;
+  text-transform: capitalize;
+}
+
+.adjacent-actions button span {
+  font-size: 13px;
+}
+
+.height-frame-status,
+.adjacent-message {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
+.height-frame-status.warning {
+  color: #9d3f31;
+  font-weight: 650;
+}
+
+.adjacent-message {
+  color: var(--moss);
 }
 
 .place-label-field {
@@ -1607,6 +1699,15 @@ fieldset.control-section .road-options {
 
   .coordinate-row {
     grid-template-columns: 1fr;
+  }
+
+  .adjacent-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .adjacent-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .piece-grid {

@@ -47,6 +47,12 @@ sampling grid while limiting the single mesh to a safe detail level.
 
 Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
 pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
+The model controls also set the minimum solid thickness under the lowest
+terrain point. North, south, east, and west buttons move the selection by one
+full tile. The first move locks the elevation datum and vertical scale, so the
+same real elevation prints at the same Z height on each tile. If a later tile
+drops below that datum, TopoSaic warns that the shared datum must move down and
+that earlier tiles must be regenerated.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry. The service caches elevation, ESA WorldCover, and OpenStreetMap input

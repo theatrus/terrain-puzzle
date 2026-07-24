@@ -225,6 +225,67 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   expect(largerBounds!.width).toBeGreaterThan(zoomedBounds!.width);
 });
 
+test("locks a height frame when moving to an adjacent tile", async ({
+  page,
+}) => {
+  const previewSpecs: Array<Record<string, unknown>> = [];
+  await page.route("http://127.0.0.1:8787/api/preview", async (route) => {
+    const spec = route.request().postDataJSON() as Record<string, unknown>;
+    previewSpecs.push(spec);
+    const moved = Number(spec.center_lon) > -121.7;
+    const minimum = moved ? 80 : 100;
+    const datum = spec.elevation_datum_m;
+    await route.fulfill({
+      json: {
+        width: 2,
+        height: 2,
+        values: [0, 0.3, 0.7, 1],
+        minimum_elevation_m: minimum,
+        maximum_elevation_m: moved ? 280 : 300,
+        height_frame_compatible:
+          datum === null || datum === undefined || minimum >= Number(datum),
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("Live elevation preview")).toBeVisible();
+
+  const minimumHeight = page.getByRole("slider", {
+    name: "Minimum piece height",
+  });
+  await expect(minimumHeight).toHaveValue("2.4");
+  await minimumHeight.fill("5");
+  await expect(minimumHeight).toHaveValue("5");
+
+  const initialLongitude = Number(
+    await page.getByLabel("Longitude").inputValue(),
+  );
+  await page
+    .getByRole("group", { name: "Adjacent tiles" })
+    .getByRole("button", { name: /east/i })
+    .click();
+
+  await expect(page.getByText(/Moved east by one tile/)).toBeVisible();
+  await expect(page.getByText(/Shared datum 96\.0 m/)).toBeVisible();
+  await expect
+    .poll(async () => Number(await page.getByLabel("Longitude").inputValue()))
+    .toBeGreaterThan(initialLongitude);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "drops below the shared" }),
+  ).toBeVisible();
+  expect(
+    previewSpecs.some(
+      (spec) =>
+        spec.elevation_datum_m === 96 &&
+        Number(spec.elevation_m_per_mm) > 0,
+    ),
+  ).toBe(true);
+
+  await page.getByRole("button", { name: "Use per-tile height" }).click();
+  await expect(page.getByText(/adjacent exports may form a step/)).toBeVisible();
+});
+
 test("rotates, zooms, and resets the interactive 3D preview", async ({
   page,
 }) => {
